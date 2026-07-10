@@ -2,16 +2,23 @@
 
 IC4Extで2台のIC4カメラをD3D12テクスチャとして取得し、`D3D12FrameSyncThread`で同期してVarjoXRの1枚のPlaneへ左右眼別に表示する実験用アプリケーションです。
 
+通常のレンダリングログに加えて、VarjoToolkitの次のサービスを同じ実験フォルダへ記録します。
+
+- `VarjoEyeTrackingService`
+- `VarjoIMUService`
+- `VarjoVSTService`
+
 ## 依存バージョン
 
 - IC4Ext: `v1.0.1`
 - VarjoXR: `v0.1.0`
+- VarjoToolkit: `v0.4.0`
 - D3D12Helper: `v1.13.0`
 - VarjoDualCameraApplicationsのキャリブレーション実装: commit `8470b8e34b0bdd50546cd2215c8969b0512c3eaa`
 - nlohmann/json: IC4Extが提供する`nlohmann_json::nlohmann_json`を共有
 - OpenCV: vcpkgの`x64-windows`パッケージ。キャリブレーション解析ターゲットだけで使用
 
-D3D12Helper v1.13.0には、キャリブレーション用readbackが使用する`D3D12ReadbackBuffer::MapRead(offset, size)`が含まれます。OpenCV型は通常表示コード、CSV、JSONモデル、Plane表示APIには露出しません。OpenCVを使うのはD3D12 readback後のチェッカーボード検出と視差推定だけです。
+VarjoXR v0.1.0は古いVarjoToolkitコミットを内部指定しますが、本アプリではトップレベルでVarjoToolkit v0.4.0を先に生成し、VarjoXRとアプリケーションの両方に同じターゲットを使用させます。
 
 ## 処理構成
 
@@ -23,12 +30,17 @@ IC4 camera 1 --/                              |
                                                 |       -> VarjoXR Plane
                                                 |          -> left/right HLSL remap
                                                 |
-                                                +-> calibration-only D3D12 readback
+                                                +-> calibration-only D3D12 copy/readback
                                                         -> OpenCV checkerboard analysis
                                                         -> latest JSON/snapshot
+
+Shared Varjo session
+  +-> VarjoEyeTrackingService -> eye_tracking.csv
+  +-> VarjoIMUService         -> imu.csv
+  +-> VarjoVSTService         -> left/right MP4 and metadata CSV
 ```
 
-視差補正は追加の表示用コピー処理ではなく、VarjoXR Planeの左右眼別`TextureProcessingDesc`へcompute HLSLを登録して行います。JSONの`leftInverse`と`rightInverse`を定数バッファとして渡し、補正後のテクスチャをPlaneへ表示します。
+視差補正はVarjoXR Planeの左右眼別`TextureProcessingDesc`へcompute HLSLを登録して行います。OpenCVはキャリブレーション用readback、チェッカーボード検出、行列推定だけで使用します。
 
 ## 必要環境
 
@@ -37,18 +49,19 @@ IC4 camera 1 --/                              |
 - CMake 3.21以上
 - IC Imaging Control 4 SDK
 - Varjo Native SDK / Varjo Runtime / Varjo HMD
-- vcpkgのOpenCV x64-windows
+- vcpkgのOpenCV `x64-windows`
+- `ffmpeg.exe`がPATHから実行可能
 
-vcpkgはPATH上の`vcpkg.exe`または環境変数`VCPKG_ROOT`から自動検出します。明示的に`CMAKE_TOOLCHAIN_FILE`を指定した場合は、そちらを優先します。
+`ffmpeg.exe`はVarjoVSTServiceが左右VST映像をMP4へ保存するために使用します。
 
 ## ビルド（CMD）
 
-D3D12Helperの固定バージョンを変更した場合、既存の`_deps/d3d12helper-src`が再利用されないよう、ビルドディレクトリ全体を削除してください。
+VarjoToolkitのバージョンと追加ソースが変わったため、以前のビルドディレクトリは削除してください。
 
 ```bat
 set "IC4_SDK_ROOT=%LOCALAPPDATA%\Programs\The Imaging Source Europe GmbH\IC Imaging Control 4"
 set "VARJO_SDK_ROOT=C:\personal\iwatake\Varjo_Experimental_SDK_for_Custom_Engines_4.11.0 (1)\varjo-sdk-experimental"
-set "PATH=%IC4_SDK_ROOT%\bin\x64;%PATH%"
+set "PATH=%IC4_SDK_ROOT%\bin\x64;%VARJO_SDK_ROOT%\bin;%PATH%"
 
 rmdir /s /q out\build\default 2>nul
 
@@ -61,53 +74,103 @@ cmake -S . -B out\build\default -G "Visual Studio 17 2022" -A x64 ^
 cmake --build out\build\default --config Release --parallel
 ```
 
-vcpkgを自動検出できない場合:
+vcpkgはPATH上の`vcpkg.exe`または環境変数`VCPKG_ROOT`から自動検出します。明示的に`CMAKE_TOOLCHAIN_FILE`を指定した場合はそちらを優先します。
+
+## 実験出力ディレクトリ
+
+`--dir`と`--project`は必須です。
+
+```text
+--dir <親ディレクトリ>
+--project <フォルダ名>
+```
+
+例えば次の指定では、`D:\experiments\suturing01`を作成します。
 
 ```bat
-cmake -S . -B out\build\default -G "Visual Studio 17 2022" -A x64 ^
-  "-DCMAKE_TOOLCHAIN_FILE:FILEPATH=C:\path\to\vcpkg\scripts\buildsystems\vcpkg.cmake" ^
-  "-DIC4_SDK_ROOT:PATH=%IC4_SDK_ROOT%" ^
-  "-DVARJOXR_VARJO_SDK_ROOT:PATH=%VARJO_SDK_ROOT%"
+--dir "D:\experiments" --project suturing01
 ```
+
+すでに同名が存在する場合は自動的に次の名前を試します。
+
+```text
+suturing01
+suturing01_1
+suturing01_2
+...
+```
+
+`--project`にはパスではなく単一のフォルダ名を指定してください。
+
+### 生成される主なファイル
+
+```text
+<resolved project directory>/
+  rendered_frames.csv
+  eye_tracking.csv
+  imu.csv
+  varjo_vst_left.mp4
+  varjo_vst_right.mp4
+  varjo_vst_left_metadata.csv
+  varjo_vst_right_metadata.csv
+  varjo_service_summary.txt
+```
+
+`--metadata-csv FILENAME`を指定すると、`rendered_frames.csv`のファイル名だけを変更できます。指定値にディレクトリが含まれていても、ファイルは必ず解決済みプロジェクトフォルダ内に作成されます。
+
+## Varjoサービスの記録期間
+
+ライブキャリブレーションを行う場合、Eye Tracking、IMU、VST、レンダリングCSVはキャリブレーション確定後に開始します。そのため、チェッカーボードを提示している校正フェーズは実験ログへ混入しません。
+
+3サービスのいずれかが開始できない場合、ログが部分的に欠けた状態で実験を続行せず、通常レンダリング開始前にエラー終了します。
+
+### Eye Tracking
+
+- 出力: `eye_tracking.csv`
+- filter: `NONE`
+- frequency: `MAXIMUM`
+- Gaze、Eye Measurements、IPD、表示座標への投影結果、対応FrameInfoを記録
+
+### IMU / Head Pose
+
+- 出力: `imu.csv`
+- pose、position、Euler角、角速度、FrameInfo、Varjo時刻とUnix時刻を記録
+
+### VST
+
+- 出力: 左右MP4と左右metadata CSV
+- VST映像、stream frame情報、intrinsics、extrinsics、Varjo時刻とUnix時刻を記録
+- MP4エンコードにはPATH上の`ffmpeg.exe`を使用
+
+終了時には各サービスを停止してファイルを閉じ、件数・drop・write failureを`varjo_service_summary.txt`へ保存します。
 
 ## `--calib JSON_PATH|-`
 
-`--calib`には必ず値を1つ指定します。Boost.Program_optionsは使用せず、`-`を特別値にすることで既存の軽量な引数パーサで曖昧なく処理します。
+`--calib`には必ず値を1つ指定します。
 
-### 1. 既存JSONを使用
-
-```bat
-DualIC4VarjoApp.exe --calib C:\calibration\stereo.json ...
-```
-
-指定ファイルが存在する場合は起動時にnlohmann/jsonで読み込み、カメラ出力サイズとの整合性を確認して、直ちにPlaneの左右HLSLへ反映します。ライブ校正フェーズには入りません。
-
-### 2. 新しいJSONを作成して保存
+### 既存JSONを使用
 
 ```bat
-DualIC4VarjoApp.exe --calib C:\calibration\new_stereo.json ...
+--calib C:\calibration\stereo.json
 ```
 
-指定ファイルが存在しない場合は、通常の実験処理へ入る前にライブ校正フェーズを開始します。
+指定ファイルが存在する場合は起動時に読み込み、直ちにPlaneの左右HLSLへ反映します。
 
-1. チェッカーボードを左右カメラへ見せる
-2. 位置と角度を変えて複数観測を登録する
-3. 新しいrevisionが生成されるたびに補正をPlane HLSLへライブ反映する
-4. 有効な推定後に`q`を押す
-5. JSONを指定パスへatomic saveする
-6. 同じ補正を維持したまま通常の実験表示へ移る
-
-必要観測数に達していない状態で`q`を押した場合は終了せず、現在の採用観測数を表示します。
-
-### 3. 保存せずライブ校正
+### 新しいJSONを作成して保存
 
 ```bat
-DualIC4VarjoApp.exe --calib - ...
+--calib C:\calibration\new_stereo.json
 ```
 
-`-`を指定するとライブ校正を行います。`q`で確定した補正は通常表示へ引き継ぎますが、ローカルJSONは作成しません。
+指定ファイルが存在しない場合は通常の実験処理へ入る前にライブ校正を開始します。有効な推定後に`q`を押すとJSONを保存し、その補正を維持したまま実験ログを開始します。
 
-`--calib`単独は使用できません。値がなければ引数エラーになります。
+### 保存せずライブ校正
+
+```bat
+--calib -
+```
+
+`q`で確定した補正は表示へ引き継ぎますが、JSONは保存しません。
 
 ### 校正オプション
 
@@ -125,10 +188,10 @@ DualIC4VarjoApp.exe --calib - ...
 
 ## 現在の実機設定例
 
-既存キャリブレーションを使用する場合:
-
 ```bat
 out\build\default\Release\DualIC4VarjoApp.exe ^
+  --dir "D:\experiments" ^
+  --project experiment01 ^
   --left-device-index 1 ^
   --right-device-index 0 ^
   --left-json "C:\Users\MiyafujiLab2\Downloads\gamma1.json" ^
@@ -142,14 +205,13 @@ out\build\default\Release\DualIC4VarjoApp.exe ^
   --camera-start-delay-ms 2000 ^
   --sync-timestamp host ^
   --sync-tolerance-ms 5.0 ^
-  --calib "C:\Users\MiyafujiLab2\Downloads\stereo_calibration.json" ^
-  --metadata-csv logs\experiment01_rendered_frames.csv
+  --calib "C:\Users\MiyafujiLab2\Downloads\stereo_calibration.json"
 ```
 
-保存せず新規校正する場合は、上の`--calib`行を次へ置き換えます。
+保存せず新規校正する場合は`--calib`行を次へ置き換えます。
 
 ```bat
-  --calib - ^
+  --calib -
 ```
 
 ## Planeのキー操作
@@ -164,14 +226,16 @@ out\build\default\Release\DualIC4VarjoApp.exe ^
 | Shift + ← / → | 幅を0.01 m縮小 / 拡大。高さは縦横比を維持 |
 | Esc / Ctrl+C | 終了 |
 
-## メタデータCSV
+## レンダリングメタデータCSV
 
-ライブ校正フェーズのフレームは実験CSVへ記録しません。校正を確定して通常表示へ移った時点から記録を開始します。
+`rendered_frames.csv`には以下を記録します。
 
-追加した校正列:
+- レンダー提出時刻と成功状態
+- 新しい同期済みカメラフレームへ切り替えたか
+- 使用中のキャリブレーションsource / profile / revision
+- Plane位置、サイズ、移動・リサイズ操作
+- 左右カメラframe numberとtimestamp
+- 左右同期差
+- FrameSyncThread、同期キュー、左右CameraCaptureThreadの累積統計
 
-- `calibration_source`: `none` / `json` / `live`
-- `calibration_profile`
-- `calibration_revision`
-
-そのほか、Plane位置・サイズ、左右フレーム番号と時刻、同期差、FrameSyncThreadとカメラスレッドのdrop/error統計を記録します。1レコードを文字列化してCRLFを1回だけ追加するため、ロガー側から空行は生成しません。
+1レコードを一度文字列として作成し、CRLFを1回だけ付加するため、ロガー側から空行は生成しません。
