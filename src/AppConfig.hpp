@@ -67,6 +67,8 @@ struct AppConfig {
     bool enableD3D12DebugLayer = true;
     double maxRuntimeSeconds = 0.0;
 
+    std::filesystem::path outputBaseDirectory;
+    std::string projectName;
     std::filesystem::path metadataCsv;
     bool showHelp = false;
 };
