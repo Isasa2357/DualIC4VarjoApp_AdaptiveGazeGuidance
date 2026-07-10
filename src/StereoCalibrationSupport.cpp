@@ -2,6 +2,10 @@
 
 #include <VdcaStereoCalibration/D3D12StereoFrame.hpp>
 
+#include <IC4Ext/D3D12/D3D12BackendContext.hpp>
+#include <IC4Ext/D3D12/D3D12FenceManager.hpp>
+#include <IC4Ext/D3D12/D3D12FrameCopier.hpp>
+
 #include <VarjoXR/VarjoXR.hpp>
 
 #include <algorithm>
@@ -41,32 +45,34 @@ std::int64_t Timestamp100ns(const IC4Ext::D3D12CameraFrame& frame)
         frame.timing.hostReceivedTime.time_since_epoch()).count() / 100;
 }
 
-StereoD3D12Frame MakeCalibrationFrame(
-    std::shared_ptr<IC4Ext::D3D12SyncedFrameSet> owner)
-{
-    if (!owner) throw std::invalid_argument("MakeCalibrationFrame received null owner");
+struct CopiedStereoFrameOwner {
+    IC4Ext::D3D12CameraFrame left;
+    IC4Ext::D3D12CameraFrame right;
+    std::uint64_t syncGroupId = 0;
+};
 
-    const auto& left = RequireCamera(*owner, 0).frame;
-    const auto& right = RequireCamera(*owner, 1).frame;
-    if (!left.texture || !right.texture) {
-        throw std::runtime_error("calibration source contains a null D3D12 texture");
+StereoD3D12Frame MakeCalibrationFrame(
+    std::shared_ptr<CopiedStereoFrameOwner> owner)
+{
+    if (!owner || !owner->left.texture || !owner->right.texture) {
+        throw std::invalid_argument("MakeCalibrationFrame received an invalid copied frame");
     }
 
     D3D12ReadyPoint leftReady;
-    leftReady.fence = left.ready.fence;
-    leftReady.value = left.ready.value;
+    leftReady.fence = owner->left.ready.fence;
+    leftReady.value = owner->left.ready.value;
     D3D12ReadyPoint rightReady;
-    rightReady.fence = right.ready.fence;
-    rightReady.value = right.ready.value;
+    rightReady.fence = owner->right.ready.fence;
+    rightReady.value = owner->right.ready.value;
 
     StereoD3D12Frame result;
     result.left = Vdca::StereoCalibration::MakeD3D12ImageFrame(
-        left.texture.Get(), left.resourceState, std::move(leftReady));
+        owner->left.texture.Get(), owner->left.resourceState, std::move(leftReady));
     result.right = Vdca::StereoCalibration::MakeD3D12ImageFrame(
-        right.texture.Get(), right.resourceState, std::move(rightReady));
+        owner->right.texture.Get(), owner->right.resourceState, std::move(rightReady));
     result.frameNumber = owner->syncGroupId;
-    result.leftTimestamp100ns = Timestamp100ns(left);
-    result.rightTimestamp100ns = Timestamp100ns(right);
+    result.leftTimestamp100ns = Timestamp100ns(owner->left);
+    result.rightTimestamp100ns = Timestamp100ns(owner->right);
     result.lifetimeToken = std::move(owner);
     return result;
 }
@@ -198,6 +204,8 @@ VarjoXR::TextureProcessingDesc MakeProcessing(
 } // namespace
 
 struct LiveStereoCalibration::Impl {
+    IC4Ext::D3D12FenceManager copyFenceManager;
+    IC4Ext::D3D12FrameCopier frameCopier;
     std::unique_ptr<Vdca::StereoCalibration::RealtimeStereoCalibrator> calibrator;
 
     Impl(
@@ -210,6 +218,18 @@ struct LiveStereoCalibration::Impl {
         if (!core) throw std::invalid_argument("LiveStereoCalibration requires D3D12Core");
         if (inputWidth == 0 || inputHeight == 0) {
             throw std::invalid_argument("LiveStereoCalibration requires a non-zero input size");
+        }
+
+        auto backend = IC4Ext::D3D12BackendContext::FromCore(core);
+        if (!copyFenceManager.initialize(backend)) {
+            throw std::runtime_error(
+                "calibration copy fence initialization failed: " +
+                copyFenceManager.lastError().message);
+        }
+        if (!frameCopier.initialize(backend, &copyFenceManager)) {
+            throw std::runtime_error(
+                "calibration frame copier initialization failed: " +
+                frameCopier.lastError().message);
         }
 
         Vdca::StereoCalibration::RealtimeStereoCalibratorConfig config;
@@ -230,6 +250,35 @@ struct LiveStereoCalibration::Impl {
         config.initialCalibration = std::move(initialCalibration);
         calibrator = std::make_unique<Vdca::StereoCalibration::RealtimeStereoCalibrator>(
             std::move(config));
+    }
+
+    void submitLatest(std::shared_ptr<IC4Ext::D3D12SyncedFrameSet> frameSet)
+    {
+        if (!frameSet) throw std::invalid_argument("calibration frame set is null");
+        const auto& leftSource = RequireCamera(*frameSet, 0).frame;
+        const auto& rightSource = RequireCamera(*frameSet, 1).frame;
+
+        auto copied = std::make_shared<CopiedStereoFrameOwner>();
+        copied->syncGroupId = frameSet->syncGroupId;
+        if (!frameCopier.copyFrame(leftSource, copied->left)) {
+            throw std::runtime_error(
+                "left calibration frame copy failed: " + frameCopier.lastError().message);
+        }
+        if (!frameCopier.copyFrame(rightSource, copied->right)) {
+            throw std::runtime_error(
+                "right calibration frame copy failed: " + frameCopier.lastError().message);
+        }
+
+        // RealtimeStereoCalibrator may replace an unprocessed latest frame. Wait
+        // here so a replaced copied resource can be released safely.
+        if (copied->left.ready.isValid() && !copied->left.ready.wait(INFINITE)) {
+            throw std::runtime_error("left calibration GPU copy wait failed");
+        }
+        if (copied->right.ready.isValid() && !copied->right.ready.wait(INFINITE)) {
+            throw std::runtime_error("right calibration GPU copy wait failed");
+        }
+
+        calibrator->submitLatestFrame(MakeCalibrationFrame(std::move(copied)));
     }
 };
 
@@ -269,7 +318,7 @@ void LiveStereoCalibration::stop()
 void LiveStereoCalibration::submitLatest(
     std::shared_ptr<IC4Ext::D3D12SyncedFrameSet> frameSet)
 {
-    impl_->calibrator->submitLatestFrame(MakeCalibrationFrame(std::move(frameSet)));
+    impl_->submitLatest(std::move(frameSet));
 }
 
 std::shared_ptr<const CalibrationSnapshot> LiveStereoCalibration::latestSnapshot() const
@@ -294,10 +343,12 @@ void ValidateCalibrationInputGeometry(
     std::uint32_t inputHeight)
 {
     Vdca::StereoCalibration::ValidateCalibrationDocument(document);
-    if (document.calibrationInputSize.width != inputWidth ||
+    if (document.sourceSize.width != inputWidth ||
+        document.sourceSize.height != inputHeight ||
+        document.calibrationInputSize.width != inputWidth ||
         document.calibrationInputSize.height != inputHeight) {
         throw std::invalid_argument(
-            "calibration JSON input size does not match the IC4 output texture size");
+            "calibration JSON source/input size does not match the IC4 output texture size");
     }
 }
 
