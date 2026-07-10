@@ -29,10 +29,13 @@ struct RenderedFrameMetadataRow {
     bool submitOk = false;
 
     bool planeMoved = false;
+    bool planeResized = false;
     std::string planePlacementMode;
     float planeX = 0.0f;
     float planeY = 0.0f;
     float planeZ = 0.0f;
+    float planeWidth = 0.0f;
+    float planeHeight = 0.0f;
 
     std::uint64_t syncGroupId = 0;
     std::int64_t syncEmittedUnixUs = 0;
