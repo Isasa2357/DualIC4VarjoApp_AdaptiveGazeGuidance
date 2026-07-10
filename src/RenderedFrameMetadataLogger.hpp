@@ -28,6 +28,10 @@ struct RenderedFrameMetadataRow {
     bool newFrameFromQueue = false;
     bool submitOk = false;
 
+    std::string calibrationSource = "none";
+    std::string calibrationProfile = "none";
+    std::uint64_t calibrationRevision = 0;
+
     bool planeMoved = false;
     bool planeResized = false;
     std::string planePlacementMode;
