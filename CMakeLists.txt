@@ -23,7 +23,7 @@ endif()
 set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg target triplet")
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.2.0
+    VERSION 0.3.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -35,6 +35,7 @@ set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Do not update populated dep
 
 set(DUAL_IC4_VARJO_IC4EXT_TAG "v1.0.1")
 set(DUAL_IC4_VARJO_VARJOXR_TAG "v0.1.0")
+set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG "v0.4.0")
 set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
 set(DUAL_IC4_VARJO_CALIBRATION_COMMIT "8470b8e34b0bdd50546cd2215c8969b0512c3eaa")
 
@@ -110,12 +111,34 @@ set(IC4_SDK_ROOT "${_dual_ic4_resolved_sdk_root}" CACHE PATH "Path to the IC Ima
 message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
 
 # -----------------------------------------------------------------------------
-# D3D12 / Varjo / IC4 dependencies
+# VarjoToolkit v0.4.0 is resolved before VarjoXR. VarjoXR v0.1.0 otherwise pins
+# an older toolkit commit that does not expose the current EyeTracking, IMU, and
+# VST service APIs.
+# -----------------------------------------------------------------------------
+if(VARJOXR_VARJO_SDK_ROOT)
+    set(VARJO_SDK_ROOT "${VARJOXR_VARJO_SDK_ROOT}" CACHE PATH "Path to Varjo Native SDK" FORCE)
+endif()
+set(VARJOTOOLKIT_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+set(VARJOTOOLKIT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(VARJOTOOLKIT_BUILD_HMD_TESTS OFF CACHE BOOL "" FORCE)
+set(VARJOTOOLKIT_ENABLE_EXPERIMENTAL_MR_POSTPROCESS OFF CACHE BOOL "" FORCE)
+if(NOT TARGET VarjoToolkit::VarjoToolkit)
+    FetchContent_Declare(
+        VarjoToolkit
+        GIT_REPOSITORY https://github.com/Isasa2357/VarjoToolkit.git
+        GIT_TAG        ${DUAL_IC4_VARJO_VARJOTOOLKIT_TAG}
+        GIT_SHALLOW    TRUE)
+    FetchContent_MakeAvailable(VarjoToolkit)
+endif()
+
+# -----------------------------------------------------------------------------
+# D3D12 / VarjoXR / IC4Ext dependencies
 # -----------------------------------------------------------------------------
 set(VARJOXR_ENABLE_D3D11 OFF CACHE BOOL "" FORCE)
 set(VARJOXR_ENABLE_D3D12 ON CACHE BOOL "" FORCE)
 set(VARJOXR_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 set(VARJOXR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(VARJOXR_VARJOTOOLKIT_GIT_TAG "${DUAL_IC4_VARJO_VARJOTOOLKIT_TAG}" CACHE STRING "" FORCE)
 set(VARJOXR_D3D12HELPER_GIT_TAG "${DUAL_IC4_VARJO_D3D12HELPER_TAG}" CACHE STRING "" FORCE)
 set(D3D12HELPER_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 set(D3D12HELPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -165,6 +188,8 @@ add_subdirectory(
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
+    src/ExperimentOutput.cpp
+    src/ExperimentOutput.hpp
     src/RenderedFrameMetadataLogger.cpp
     src/RenderedFrameMetadataLogger.hpp
     src/StereoCalibrationSupport.cpp
@@ -173,6 +198,8 @@ add_executable(DualIC4VarjoApp
     src/StereoDisplayTextureRing.hpp
     src/TimeUtil.cpp
     src/TimeUtil.hpp
+    src/VarjoServiceLogging.cpp
+    src/VarjoServiceLogging.hpp
     src/main.cpp)
 
 target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
@@ -180,6 +207,7 @@ target_compile_definitions(DualIC4VarjoApp PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(DualIC4VarjoApp PRIVATE
     IC4Ext::IC4Ext
     VarjoXR::VarjoXR
+    VarjoToolkit::VarjoToolkit
     Vdca::StereoCalibrationCore
     Vdca::StereoCalibrationOpenCV)
 
