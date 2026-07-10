@@ -2,12 +2,7 @@
 
 #include <VarjoXR/VarjoXR.hpp>
 
-#include <algorithm>
-#include <chrono>
-#include <ctime>
-#include <iomanip>
 #include <limits>
-#include <sstream>
 #include <type_traits>
 
 namespace DualIC4Varjo {
@@ -22,9 +17,14 @@ bool ParseNumber(const std::string& text, T& value)
             const long long parsed = std::stoll(text, &consumed, 10);
             if (consumed != text.size()) return false;
             if constexpr (std::is_unsigned_v<T>) {
-                if (parsed < 0 || static_cast<unsigned long long>(parsed) > std::numeric_limits<T>::max()) return false;
-            } else if (parsed < static_cast<long long>(std::numeric_limits<T>::min()) ||
-                       parsed > static_cast<long long>(std::numeric_limits<T>::max())) {
+                if (parsed < 0 ||
+                    static_cast<unsigned long long>(parsed) >
+                        std::numeric_limits<T>::max()) {
+                    return false;
+                }
+            } else if (
+                parsed < static_cast<long long>(std::numeric_limits<T>::min()) ||
+                parsed > static_cast<long long>(std::numeric_limits<T>::max())) {
                 return false;
             }
             value = static_cast<T>(parsed);
@@ -54,7 +54,19 @@ bool ParseBool(const std::string& text, bool& value)
 
 bool IsCalibrationProfile(const std::string& value)
 {
-    return value == "uncalibrated" || value == "affine_vertical" || value == "affine_full";
+    return value == "uncalibrated" ||
+           value == "affine_vertical" ||
+           value == "affine_full";
+}
+
+bool IsSingleFolderName(const std::string& value)
+{
+    if (value.empty()) return false;
+    const std::filesystem::path path(value);
+    return !path.is_absolute() &&
+           !path.has_parent_path() &&
+           path != "." &&
+           path != "..";
 }
 
 } // namespace
@@ -89,11 +101,8 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
 
         if (option == "--calib") {
             config.calibration.enabled = true;
-            if (value == "-") {
-                config.calibration.jsonPath.reset();
-            } else {
-                config.calibration.jsonPath = std::filesystem::path(value);
-            }
+            if (value == "-") config.calibration.jsonPath.reset();
+            else config.calibration.jsonPath = std::filesystem::path(value);
         } else if (option == "--left-device-index") {
             if (!ParseNumber(value, config.left.selector.deviceIndex)) return invalidValue(option, value);
         } else if (option == "--right-device-index") {
@@ -187,8 +196,12 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
             if (!ParseBool(value, config.enableD3D12DebugLayer)) return invalidValue(option, value);
         } else if (option == "--max-runtime-seconds") {
             if (!ParseNumber(value, config.maxRuntimeSeconds)) return invalidValue(option, value);
+        } else if (option == "--dir") {
+            config.outputBaseDirectory = std::filesystem::path(value);
+        } else if (option == "--project") {
+            config.projectName = value;
         } else if (option == "--metadata-csv") {
-            config.metadataCsv = value;
+            config.metadataCsv = std::filesystem::path(value);
         } else if (option == "--calib-board-cols") {
             if (!ParseNumber(value, config.calibration.boardColumns)) return invalidValue(option, value);
         } else if (option == "--calib-board-rows") {
@@ -213,6 +226,14 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
         }
     }
 
+    if (config.outputBaseDirectory.empty() || config.projectName.empty()) {
+        error = "--dir and --project are required";
+        return false;
+    }
+    if (!IsSingleFolderName(config.projectName)) {
+        error = "--project must be a single folder name, not a path";
+        return false;
+    }
     if (config.left.selector.deviceIndex == config.right.selector.deviceIndex &&
         config.left.selector.serial.empty() && config.right.selector.serial.empty() &&
         config.left.selector.uniqueName.empty() && config.right.selector.uniqueName.empty()) {
@@ -227,7 +248,8 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
         error = "--sync-tolerance-ms must be non-negative";
         return false;
     }
-    if (config.syncBufferedFramesPerCamera == 0 || config.inputQueueSize == 0 || config.outputQueueSize == 0) {
+    if (config.syncBufferedFramesPerCamera == 0 ||
+        config.inputQueueSize == 0 || config.outputQueueSize == 0) {
         error = "Queue sizes and --sync-buffer-frames must be greater than zero";
         return false;
     }
@@ -235,7 +257,9 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
         error = "--display-ring-size must be at least 3";
         return false;
     }
-    if (config.planeWidthMeters <= 0.0f || config.planeDistanceMeters <= 0.0f || config.planeHeightMeters < 0.0f) {
+    if (config.planeWidthMeters <= 0.0f ||
+        config.planeDistanceMeters <= 0.0f ||
+        config.planeHeightMeters < 0.0f) {
         error = "Plane width and distance must be positive; plane height must be zero or positive";
         return false;
     }
@@ -248,12 +272,14 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
             error = "Calibration board dimensions must be at least 2 x 2 inner corners";
             return false;
         }
-        if (config.calibration.maxObservations == 0 || config.calibration.minObservations == 0 ||
+        if (config.calibration.maxObservations == 0 ||
+            config.calibration.minObservations == 0 ||
             config.calibration.minObservations > config.calibration.maxObservations) {
             error = "Calibration observation counts are invalid";
             return false;
         }
-        if (config.calibration.minCornerMotionPx < 0.0 || config.calibration.ransacThresholdPx <= 0.0) {
+        if (config.calibration.minCornerMotionPx < 0.0 ||
+            config.calibration.ransacThresholdPx <= 0.0) {
             error = "Calibration motion threshold must be non-negative and RANSAC threshold must be positive";
             return false;
         }
@@ -266,6 +292,11 @@ void PrintUsage(std::ostream& out)
 {
     out <<
         "DualIC4VarjoApp (D3D12)\n\n"
+        "Experiment output:\n"
+        "  --dir PATH                       Parent directory for experiment folders\n"
+        "  --project NAME                   Requested experiment folder name\n"
+        "                                   Existing names become NAME_1, NAME_2, ...\n"
+        "  --metadata-csv FILENAME          Default: rendered_frames.csv\n\n"
         "Camera selection:\n"
         "  --left-device-index N / --right-device-index N\n"
         "  --left-serial TEXT / --right-serial TEXT\n"
@@ -293,7 +324,8 @@ void PrintUsage(std::ostream& out)
         "  --plane-width-m N --plane-height-m N\n"
         "  --plane-x-m N --plane-y-m N --plane-distance-m N\n\n"
         "Logging and execution:\n"
-        "  --metadata-csv PATH\n"
+        "  Eye tracking, IMU/head pose, VST videos/metadata, and rendered frame CSV\n"
+        "  are written inside the resolved --dir/--project folder.\n"
         "  --display-ring-size N\n"
         "  --d3d12-debug 0|1\n"
         "  --max-runtime-seconds N\n"
@@ -302,7 +334,9 @@ void PrintUsage(std::ostream& out)
         "During the experiment, use arrow keys for Plane movement and Shift+Left/Right for resizing.\n";
 }
 
-IC4Ext::CameraCaptureConfig MakeCaptureConfig(const AppConfig& app, const CameraAppConfig& camera)
+IC4Ext::CameraCaptureConfig MakeCaptureConfig(
+    const AppConfig& app,
+    const CameraAppConfig& camera)
 {
     IC4Ext::CameraCaptureConfig config;
     if (!camera.stateJson.empty()) {
@@ -329,13 +363,7 @@ IC4Ext::CameraCaptureConfig MakeCaptureConfig(const AppConfig& app, const Camera
 
 std::filesystem::path MakeDefaultMetadataPath()
 {
-    const auto now = std::chrono::system_clock::now();
-    const std::time_t timeValue = std::chrono::system_clock::to_time_t(now);
-    std::tm local{};
-    localtime_s(&local, &timeValue);
-    std::ostringstream name;
-    name << "rendered_frames_" << std::put_time(&local, "%Y%m%d_%H%M%S") << ".csv";
-    return std::filesystem::path("logs") / name.str();
+    return std::filesystem::path("rendered_frames.csv");
 }
 
 const char* TimestampSourceName(IC4Ext::FrameSyncTimestampSource source) noexcept
