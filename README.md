@@ -70,7 +70,9 @@ cmake -S . -B out\build\default -G "Visual Studio 17 2022" -A x64 ^
   "-DVARJOXR_VARJO_SDK_ROOT:PATH=%VARJO_SDK_ROOT%"
 ```
 
-## `--calib [JSON_PATH]`
+## `--calib JSON_PATH|-`
+
+`--calib`には必ず値を1つ指定します。Boost.Program_optionsは使用せず、`-`を特別値にすることで既存の軽量な引数パーサで曖昧なく処理します。
 
 ### 1. 既存JSONを使用
 
@@ -83,7 +85,7 @@ DualIC4VarjoApp.exe --calib C:\calibration\stereo.json ...
 ### 2. 新しいJSONを作成して保存
 
 ```bat
-DualIC4VarjoApp.exe --calib C:\calibration\stereo.json ...
+DualIC4VarjoApp.exe --calib C:\calibration\new_stereo.json ...
 ```
 
 指定ファイルが存在しない場合は、通常の実験処理へ入る前にライブ校正フェーズを開始します。
@@ -100,10 +102,12 @@ DualIC4VarjoApp.exe --calib C:\calibration\stereo.json ...
 ### 3. 保存せずライブ校正
 
 ```bat
-DualIC4VarjoApp.exe --calib ...
+DualIC4VarjoApp.exe --calib - ...
 ```
 
-`--calib`の後ろにパスを指定しない場合もライブ校正を行います。`q`で確定した補正は通常表示へ引き継ぎますが、ローカルJSONは作成しません。
+`-`を指定するとライブ校正を行います。`q`で確定した補正は通常表示へ引き継ぎますが、ローカルJSONは作成しません。
+
+`--calib`単独は使用できません。値がなければ引数エラーになります。
 
 ### 校正オプション
 
@@ -142,7 +146,11 @@ out\build\default\Release\DualIC4VarjoApp.exe ^
   --metadata-csv logs\experiment01_rendered_frames.csv
 ```
 
-新規校正を行う場合は、まだ存在しないJSONパスを指定するか、保存不要ならパスを省略します。
+保存せず新規校正する場合は、上の`--calib`行を次へ置き換えます。
+
+```bat
+  --calib - ^
+```
 
 ## Planeのキー操作
 
