@@ -100,7 +100,7 @@ void RenderedFrameMetadataLogger::writeHeader()
 {
     writeRecord(
         "render_row_index,render_submit_unix_us,render_submit_local_iso8601,new_frame_from_queue,submit_ok,"
-        "plane_moved,plane_placement_mode,plane_x_m,plane_y_m,plane_z_m,"
+        "plane_moved,plane_resized,plane_placement_mode,plane_x_m,plane_y_m,plane_z_m,plane_width_m,plane_height_m,"
         "sync_group_id,sync_emitted_unix_us,sync_timestamp_source,sync_timestamp_diff_us,host_received_diff_us,display_slot_index,"
         "left_frame_number,left_device_timestamp_ns,left_host_received_unix_us,left_width,left_height,"
         "right_frame_number,right_device_timestamp_ns,right_host_received_unix_us,right_width,right_height,"
@@ -119,10 +119,13 @@ void RenderedFrameMetadataLogger::writeRow(const RenderedFrameMetadataRow& row)
          << ',' << (row.newFrameFromQueue ? 1 : 0)
          << ',' << (row.submitOk ? 1 : 0)
          << ',' << (row.planeMoved ? 1 : 0)
+         << ',' << (row.planeResized ? 1 : 0)
          << ',' << row.planePlacementMode
          << ',' << std::fixed << std::setprecision(4) << row.planeX
          << ',' << std::fixed << std::setprecision(4) << row.planeY
          << ',' << std::fixed << std::setprecision(4) << row.planeZ
+         << ',' << std::fixed << std::setprecision(4) << row.planeWidth
+         << ',' << std::fixed << std::setprecision(4) << row.planeHeight
          << ',' << row.syncGroupId
          << ',' << row.syncEmittedUnixUs
          << ',' << row.syncTimestampSource
