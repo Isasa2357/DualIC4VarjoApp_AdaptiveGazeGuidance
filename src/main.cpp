@@ -2,10 +2,12 @@
 #define NOMINMAX
 
 #include "AppConfig.hpp"
+#include "ExperimentOutput.hpp"
 #include "RenderedFrameMetadataLogger.hpp"
 #include "StereoCalibrationSupport.hpp"
 #include "StereoDisplayTextureRing.hpp"
 #include "TimeUtil.hpp"
+#include "VarjoServiceLogging.hpp"
 
 #include <IC4Ext/IC4Ext.hpp>
 #include <VarjoToolkit/Core/VarjoSession.hpp>
@@ -339,9 +341,13 @@ int main(int argc, char** argv)
     std::cout << "DualIC4VarjoApp\n"
               << "  IC4Ext: v1.0.1\n"
               << "  VarjoXR: v0.1.0\n"
+              << "  VarjoToolkit: v0.4.0\n"
+              << "  D3D12Helper: v1.13.0\n"
               << "  Backend: D3D12\n"
               << "  Calibration: "
-              << (config.calibration.enabled ? (runLiveCalibration ? "live" : "JSON") : "disabled")
+              << (config.calibration.enabled
+                      ? (runLiveCalibration ? "live" : "JSON")
+                      : "disabled")
               << '\n';
 
     DualIC4Varjo::RenderedFrameMetadataLogger logger;
@@ -369,7 +375,8 @@ int main(int argc, char** argv)
 
         session = std::make_shared<VarjoSession>();
         if (!session->valid() && !session->initialize()) {
-            throw std::runtime_error("Varjo session initialization failed: " + session->lastError());
+            throw std::runtime_error(
+                "Varjo session initialization failed: " + session->lastError());
         }
 
         auto backend = VarjoXR::Backends::D3D12::CreateBackend(core);
@@ -377,7 +384,8 @@ int main(int argc, char** argv)
         auto& d3dBackend =
             static_cast<VarjoXR::Backends::D3D12::D3D12Backend&>(space.backend());
 
-        auto& plane = space.createPlane({config.planeWidthMeters, config.planeWidthMeters});
+        auto& plane = space.createPlane(
+            {config.planeWidthMeters, config.planeWidthMeters});
         plane.setPlacementMode(config.placementMode);
         plane.transform().position =
             {config.planeX, config.planeY, -config.planeDistanceMeters};
@@ -406,9 +414,13 @@ int main(int argc, char** argv)
         syncOptions.cameraIndices = {0, 1};
         syncOptions.maxTimestampDiffNs = static_cast<std::uint64_t>(
             std::llround(config.syncToleranceMs * 1'000'000.0));
-        syncOptions.maxBufferedFramesPerCamera = config.syncBufferedFramesPerCamera;
+        syncOptions.maxBufferedFramesPerCamera =
+            config.syncBufferedFramesPerCamera;
         syncOptions.timestampSource = config.timestampSource;
-        IC4Ext::D3D12FrameSyncThread syncThread(inputQueue, outputQueue, syncOptions);
+        IC4Ext::D3D12FrameSyncThread syncThread(
+            inputQueue,
+            outputQueue,
+            syncOptions);
 
         if (!syncThread.start()) {
             PrintError("FrameSyncThread", syncThread.lastError());
@@ -458,7 +470,9 @@ int main(int argc, char** argv)
 
         DualIC4Varjo::ClockMapper clock;
         DualIC4Varjo::StereoDisplayTextureRing displayRing(
-            core, d3dBackend, config.displayRingSize);
+            core,
+            d3dBackend,
+            config.displayRingSize);
         DisplayedPairMetadata displayedMetadata;
         std::size_t activeSlot = 0;
         bool planeSizeInitialized = false;
@@ -466,7 +480,9 @@ int main(int argc, char** argv)
         std::uint32_t inputHeight = 0;
 
         auto applySet = [&](const std::shared_ptr<IC4Ext::D3D12SyncedFrameSet>& owner) {
-            if (!owner) throw std::invalid_argument("applySet received null frame set");
+            if (!owner) {
+                throw std::invalid_argument("applySet received null frame set");
+            }
             const auto* left = FindCamera(*owner, 0);
             const auto* right = FindCamera(*owner, 1);
             if (!left || !right) {
@@ -479,11 +495,14 @@ int main(int argc, char** argv)
             plane.setTexture(VarjoXR::Eye::Left, upload.left);
             plane.setTexture(VarjoXR::Eye::Right, upload.right);
 
-            inputWidth = static_cast<std::uint32_t>(std::max(0, left->frame.format.width));
-            inputHeight = static_cast<std::uint32_t>(std::max(0, left->frame.format.height));
+            inputWidth = static_cast<std::uint32_t>(
+                std::max(0, left->frame.format.width));
+            inputHeight = static_cast<std::uint32_t>(
+                std::max(0, left->frame.format.height));
             if (!planeSizeInitialized) {
                 const float imageAspect = inputHeight > 0
-                    ? static_cast<float>(inputWidth) / static_cast<float>(inputHeight)
+                    ? static_cast<float>(inputWidth) /
+                        static_cast<float>(inputHeight)
                     : 1.0f;
                 const float heightMeters = config.planeHeightMeters > 0.0f
                     ? config.planeHeightMeters
@@ -493,7 +512,11 @@ int main(int argc, char** argv)
             }
 
             displayedMetadata = BuildPairMetadata(
-                *owner, left->frame, right->frame, config.timestampSource, clock);
+                *owner,
+                left->frame,
+                right->frame,
+                config.timestampSource,
+                clock);
         };
 
         auto currentSet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
@@ -507,14 +530,21 @@ int main(int argc, char** argv)
 
         if (loadedCalibration) {
             DualIC4Varjo::ValidateCalibrationInputGeometry(
-                *loadedCalibration, inputWidth, inputHeight);
+                *loadedCalibration,
+                inputWidth,
+                inputHeight);
             if (!loadedCalibration->hasProfile(selectedCalibrationProfile)) {
                 throw std::invalid_argument(
-                    "calibration JSON does not contain profile: " + selectedCalibrationProfile);
+                    "calibration JSON does not contain profile: " +
+                    selectedCalibrationProfile);
             }
             DualIC4Varjo::ApplyCalibrationToPlane(
-                plane, *loadedCalibration, selectedCalibrationProfile);
-            DualIC4Varjo::UpdatePlaneAspectFromCalibration(plane, *loadedCalibration);
+                plane,
+                *loadedCalibration,
+                selectedCalibrationProfile);
+            DualIC4Varjo::UpdatePlaneAspectFromCalibration(
+                plane,
+                *loadedCalibration);
             activeCalibration.source = "json";
             activeCalibration.profile = selectedCalibrationProfile;
             activeCalibration.revision = 1;
@@ -524,13 +554,20 @@ int main(int argc, char** argv)
             liveOptions.boardRows = config.calibration.boardRows;
             liveOptions.activeProfile = config.calibration.profile;
             liveOptions.maxObservationCount = config.calibration.maxObservations;
-            liveOptions.minObservationCountForUpdate = config.calibration.minObservations;
-            liveOptions.minMeanCornerMotionPx = config.calibration.minCornerMotionPx;
-            liveOptions.fundamentalRansacThresholdPx = config.calibration.ransacThresholdPx;
-            liveOptions.useFindChessboardCornersSB = config.calibration.useChessboardSb;
+            liveOptions.minObservationCountForUpdate =
+                config.calibration.minObservations;
+            liveOptions.minMeanCornerMotionPx =
+                config.calibration.minCornerMotionPx;
+            liveOptions.fundamentalRansacThresholdPx =
+                config.calibration.ransacThresholdPx;
+            liveOptions.useFindChessboardCornersSB =
+                config.calibration.useChessboardSb;
 
             DualIC4Varjo::LiveStereoCalibration liveCalibration(
-                core, inputWidth, inputHeight, liveOptions);
+                core,
+                inputWidth,
+                inputHeight,
+                liveOptions);
             liveCalibration.start();
             liveCalibration.submitLatest(currentSet);
 
@@ -552,8 +589,9 @@ int main(int argc, char** argv)
                 }
 
                 if (auto latest = outputQueue->tryPopLatest()) {
-                    currentSet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
-                        std::move(*latest));
+                    currentSet =
+                        std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
+                            std::move(*latest));
                     applySet(currentSet);
                     liveCalibration.submitLatest(currentSet);
                 }
@@ -561,11 +599,16 @@ int main(int argc, char** argv)
                 if (auto snapshot = liveCalibration.latestSnapshot();
                     snapshot && snapshot->revision != appliedRevision) {
                     DualIC4Varjo::ValidateCalibrationInputGeometry(
-                        *snapshot->document, inputWidth, inputHeight);
+                        *snapshot->document,
+                        inputWidth,
+                        inputHeight);
                     DualIC4Varjo::ApplyCalibrationToPlane(
-                        plane, *snapshot->document, snapshot->activeProfile);
+                        plane,
+                        *snapshot->document,
+                        snapshot->activeProfile);
                     DualIC4Varjo::UpdatePlaneAspectFromCalibration(
-                        plane, *snapshot->document);
+                        plane,
+                        *snapshot->document);
                     appliedRevision = snapshot->revision;
 
                     const auto& quality =
@@ -584,7 +627,8 @@ int main(int argc, char** argv)
                 if ((GetAsyncKeyState('Q') & 0x1) != 0) {
                     auto snapshot = liveCalibration.latestSnapshot();
                     if (snapshot && DualIC4Varjo::IsLiveCalibrationReady(
-                            *snapshot, config.calibration.minObservations)) {
+                            *snapshot,
+                            config.calibration.minObservations)) {
                         finalSnapshot = std::move(snapshot);
                         break;
                     }
@@ -611,20 +655,27 @@ int main(int argc, char** argv)
                 return 0;
             }
             if (!finalSnapshot || !finalSnapshot->document) {
-                throw std::runtime_error("live calibration ended without a valid snapshot");
+                throw std::runtime_error(
+                    "live calibration ended without a valid snapshot");
             }
 
             DualIC4Varjo::ApplyCalibrationToPlane(
-                plane, *finalSnapshot->document, finalSnapshot->activeProfile);
+                plane,
+                *finalSnapshot->document,
+                finalSnapshot->activeProfile);
             DualIC4Varjo::UpdatePlaneAspectFromCalibration(
-                plane, *finalSnapshot->document);
+                plane,
+                *finalSnapshot->document);
 
             if (calibrationOutputPath) {
-                const auto absolutePath = std::filesystem::absolute(*calibrationOutputPath);
+                const auto absolutePath =
+                    std::filesystem::absolute(*calibrationOutputPath);
                 finalSnapshot->document->saveJsonAtomically(absolutePath);
-                std::cout << "Saved calibration JSON: " << absolutePath.string() << '\n';
+                std::cout << "Saved calibration JSON: "
+                          << absolutePath.string() << '\n';
             } else {
-                std::cout << "Calibration was not saved because --calib - was used.\n";
+                std::cout
+                    << "Calibration was not saved because --calib - was used.\n";
             }
 
             activeCalibration.source = "live";
@@ -632,12 +683,34 @@ int main(int argc, char** argv)
             activeCalibration.revision = finalSnapshot->revision;
         }
 
+        const auto experimentOutput =
+            DualIC4Varjo::CreateExperimentOutputLayout(
+                config.outputBaseDirectory,
+                config.projectName,
+                config.metadataCsv);
+        config.metadataCsv = experimentOutput.renderedFramesCsv;
+
+        std::cout << "Experiment output directory: "
+                  << experimentOutput.directory.string() << '\n';
+        if (experimentOutput.resolvedProjectName !=
+            experimentOutput.requestedProjectName) {
+            std::cout << "Project name collision resolved as: "
+                      << experimentOutput.resolvedProjectName << '\n';
+        }
+
+        DualIC4Varjo::VarjoServiceLogging serviceLogging(
+            session->shared(),
+            experimentOutput.directory);
+        std::string serviceError;
+        if (!serviceLogging.start(serviceError)) {
+            throw std::runtime_error(serviceError);
+        }
         if (!logger.start(config.metadataCsv)) {
             throw std::runtime_error(logger.lastError());
         }
 
         std::cout
-            << "Experiment rendering started.\n"
+            << "Experiment rendering and Varjo service logging started.\n"
             << "  Arrow Left/Right : move Plane left/right by 0.01 m\n"
             << "  Arrow Up/Down    : move Plane up/down by 0.01 m\n"
             << "  Shift + Up       : move Plane farther by 0.01 m\n"
@@ -672,6 +745,8 @@ int main(int argc, char** argv)
                 newFrameFromQueue = true;
             }
 
+            serviceLogging.pump();
+
             const PlaneKeyboardUpdate planeUpdate =
                 UpdatePlaneFromKeyboard(plane, planeKeys);
             const auto submitSteady = std::chrono::steady_clock::now();
@@ -700,8 +775,9 @@ int main(int argc, char** argv)
                     leftCamera.stats(),
                     rightCamera.stats());
                 if (!logger.enqueue(std::move(failedRow))) {
-                    std::cerr << "Metadata logger failed while recording a render error: "
-                              << logger.lastError() << '\n';
+                    std::cerr
+                        << "Metadata logger failed while recording a render error: "
+                        << logger.lastError() << '\n';
                 }
                 throw;
             }
@@ -729,19 +805,30 @@ int main(int argc, char** argv)
             }
         }
 
+        serviceLogging.stop();
+        logger.stop();
         stopThreads();
         displayRing.waitIdle();
-        logger.stop();
 
+        const auto serviceStats = serviceLogging.summary();
         const auto leftStats = leftCamera.stats();
         const auto rightStats = rightCamera.stats();
         const auto syncStats = syncThread.stats();
         std::cout << "Stopped.\n"
-                  << "  left frames: " << leftStats.readFrames << '\n'
-                  << "  right frames: " << rightStats.readFrames << '\n'
-                  << "  synced sets: " << syncStats.emittedSets << '\n'
+                  << "  output directory: "
+                  << experimentOutput.directory.string() << '\n'
+                  << "  rendered frame CSV: "
+                  << config.metadataCsv.string() << '\n'
+                  << "  left camera frames: " << leftStats.readFrames << '\n'
+                  << "  right camera frames: " << rightStats.readFrames << '\n'
+                  << "  synchronized sets: " << syncStats.emittedSets << '\n'
                   << "  sync drops: " << syncStats.droppedFrames << '\n'
-                  << "  metadata: " << config.metadataCsv.string() << '\n';
+                  << "  gaze samples: " << serviceStats.gazeReceived
+                  << " dropped from app queue=" << serviceStats.gazeDropped << '\n'
+                  << "  IMU rows: " << serviceStats.imuRows << '\n'
+                  << "  VST frames L/R: " << serviceStats.vstLeftFrames
+                  << " / " << serviceStats.vstRightFrames
+                  << " write failures=" << serviceStats.vstWriteFailures << '\n';
         return 0;
     } catch (const std::exception& e) {
         gStopRequested.store(true);
