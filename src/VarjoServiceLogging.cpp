@@ -190,7 +190,7 @@ VarjoServiceLoggingSummary VarjoServiceLogging::summary() const
 
 void VarjoServiceLogging::writeSummaryFileNoThrow() const noexcept
 {
-    if (outputDirectory_.empty()) return;
+    if (outputDirectory_.empty() || (!eyeTracking_ && !imu_ && !vst_)) return;
 
     try {
         const auto values = summary();
