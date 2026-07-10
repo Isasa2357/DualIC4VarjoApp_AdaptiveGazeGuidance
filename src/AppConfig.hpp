@@ -27,6 +27,7 @@ struct CalibrationAppConfig {
     std::uint32_t boardColumns = 12;
     std::uint32_t boardRows = 9;
     std::string profile = "affine_vertical";
+    bool profileExplicit = false;
     std::size_t maxObservations = 30;
     std::size_t minObservations = 8;
     double minCornerMotionPx = 15.0;
