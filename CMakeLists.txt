@@ -143,25 +143,22 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(IC4Ext)
 
 # -----------------------------------------------------------------------------
-# Calibration-only dependency. Only the reusable core and OpenCV analyzer are
-# added; MFFrameSource and the standalone Varjo application are intentionally not.
+# Calibration-only dependency. SOURCE_SUBDIR prevents the source repository's
+# top-level application and MFFrameSource dependency from being configured.
 # OpenCV remains PRIVATE inside VdcaStereoCalibrationOpenCV.
 # -----------------------------------------------------------------------------
 FetchContent_Declare(
     VdcaCalibrationSource
     GIT_REPOSITORY https://github.com/Isasa2357/VarjoDualCameraApplications.git
     GIT_TAG        ${DUAL_IC4_VARJO_CALIBRATION_COMMIT}
-    GIT_SHALLOW    FALSE)
-FetchContent_GetProperties(VdcaCalibrationSource)
-if(NOT vdcacalibrationsource_POPULATED)
-    FetchContent_Populate(VdcaCalibrationSource)
-endif()
+    GIT_SHALLOW    FALSE
+    SOURCE_SUBDIR  libraries/StereoCalibrationCore)
+FetchContent_MakeAvailable(VdcaCalibrationSource)
+FetchContent_GetProperties(
+    VdcaCalibrationSource
+    SOURCE_DIR DUAL_IC4_VARJO_CALIBRATION_SOURCE_DIR)
 add_subdirectory(
-    "${vdcacalibrationsource_SOURCE_DIR}/libraries/StereoCalibrationCore"
-    "${CMAKE_BINARY_DIR}/_deps/vdca-calibration-core-build"
-    EXCLUDE_FROM_ALL)
-add_subdirectory(
-    "${vdcacalibrationsource_SOURCE_DIR}/libraries/StereoCalibrationOpenCV"
+    "${DUAL_IC4_VARJO_CALIBRATION_SOURCE_DIR}/libraries/StereoCalibrationOpenCV"
     "${CMAKE_BINARY_DIR}/_deps/vdca-calibration-opencv-build"
     EXCLUDE_FROM_ALL)
 
