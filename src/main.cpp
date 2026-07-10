@@ -3,6 +3,7 @@
 
 #include "AppConfig.hpp"
 #include "RenderedFrameMetadataLogger.hpp"
+#include "StereoCalibrationSupport.hpp"
 #include "StereoDisplayTextureRing.hpp"
 #include "TimeUtil.hpp"
 
@@ -22,9 +23,11 @@
 #include <cmath>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -80,6 +83,12 @@ struct PlaneKeyboardUpdate {
     bool resized = false;
 };
 
+struct ActiveCalibrationInfo {
+    std::string source = "none";
+    std::string profile = "none";
+    std::uint64_t revision = 0;
+};
+
 bool IsShiftDown()
 {
     return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
@@ -109,7 +118,6 @@ PlaneKeyboardUpdate UpdatePlaneFromKeyboard(
         float widthDelta = 0.0f;
         if (left) widthDelta -= kPlaneResizeStepMeters;
         if (right) widthDelta += kPlaneResizeStepMeters;
-
         if (widthDelta != 0.0f) {
             const auto currentSize = plane.size();
             if (currentSize.x > 0.0f && currentSize.y > 0.0f) {
@@ -135,20 +143,13 @@ PlaneKeyboardUpdate UpdatePlaneFromKeyboard(
     }
 
     if (up) {
-        if (shiftDown) {
-            // The Plane starts at negative Z. More negative means farther away.
-            position.z -= kPlaneMoveStepMeters;
-        } else {
-            position.y += kPlaneMoveStepMeters;
-        }
+        if (shiftDown) position.z -= kPlaneMoveStepMeters;
+        else position.y += kPlaneMoveStepMeters;
         update.moved = true;
     }
     if (down) {
-        if (shiftDown) {
-            position.z += kPlaneMoveStepMeters;
-        } else {
-            position.y -= kPlaneMoveStepMeters;
-        }
+        if (shiftDown) position.z += kPlaneMoveStepMeters;
+        else position.y -= kPlaneMoveStepMeters;
         update.moved = true;
     }
 
@@ -161,7 +162,6 @@ PlaneKeyboardUpdate UpdatePlaneFromKeyboard(
                   << " m, width=" << size.x
                   << " m, height=" << size.y << " m\n";
     }
-
     return update;
 }
 
@@ -242,6 +242,7 @@ DualIC4Varjo::RenderedFrameMetadataRow BuildRenderedFrameMetadata(
     std::int64_t renderSubmitUnixUs,
     bool newFrameFromQueue,
     bool submitOk,
+    const ActiveCalibrationInfo& calibration,
     const PlaneKeyboardUpdate& planeUpdate,
     const VarjoXR::XRPlane& plane,
     VarjoXR::PlacementMode placementMode,
@@ -260,6 +261,9 @@ DualIC4Varjo::RenderedFrameMetadataRow BuildRenderedFrameMetadata(
     row.renderSubmitLocalIso8601 = clock.localIso8601(renderSubmitUnixUs);
     row.newFrameFromQueue = newFrameFromQueue;
     row.submitOk = submitOk;
+    row.calibrationSource = calibration.source;
+    row.calibrationProfile = calibration.profile;
+    row.calibrationRevision = calibration.revision;
 
     const auto& position = plane.transform().position;
     const auto size = plane.size();
@@ -277,7 +281,6 @@ DualIC4Varjo::RenderedFrameMetadataRow BuildRenderedFrameMetadata(
     row.syncTimestampSource = syncTimestampSource ? syncTimestampSource : "unknown";
     row.syncTimestampDiffNs = displayedMetadata.syncTimestampDiffNs;
     row.hostReceivedDiffUs = displayedMetadata.hostReceivedDiffUs;
-
     row.left = displayedMetadata.left;
     row.right = displayedMetadata.right;
     row.displaySlotIndex = displaySlotIndex;
@@ -298,6 +301,7 @@ void PrintError(const char* label, const IC4Ext::ErrorInfo& error)
 int main(int argc, char** argv)
 {
     using DualIC4Varjo::AppConfig;
+    namespace Calibration = Vdca::StereoCalibration;
 
     SetConsoleCtrlHandler(ConsoleControlHandler, TRUE);
 
@@ -313,18 +317,30 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    std::optional<Calibration::CalibrationDocument> loadedCalibration;
+    bool runLiveCalibration = false;
+    std::optional<std::filesystem::path> calibrationOutputPath;
+    if (config.calibration.enabled) {
+        calibrationOutputPath = config.calibration.jsonPath;
+        if (calibrationOutputPath && std::filesystem::exists(*calibrationOutputPath)) {
+            loadedCalibration = Calibration::CalibrationDocument::loadJson(
+                std::filesystem::absolute(*calibrationOutputPath));
+            std::cout << "Loaded calibration JSON: "
+                      << std::filesystem::absolute(*calibrationOutputPath).string() << '\n';
+        } else {
+            runLiveCalibration = true;
+        }
+    }
+
     std::cout << "DualIC4VarjoApp\n"
               << "  IC4Ext: v1.0.1\n"
               << "  VarjoXR: v0.1.0\n"
               << "  Backend: D3D12\n"
-              << "  Metadata: " << config.metadataCsv.string() << '\n';
+              << "  Calibration: "
+              << (config.calibration.enabled ? (runLiveCalibration ? "live" : "JSON") : "disabled")
+              << '\n';
 
     DualIC4Varjo::RenderedFrameMetadataLogger logger;
-    if (!logger.start(config.metadataCsv)) {
-        std::cerr << logger.lastError() << '\n';
-        return 1;
-    }
-
     std::shared_ptr<D3D12CoreLib::D3D12Core> core;
     std::shared_ptr<VarjoSession> session;
 
@@ -363,7 +379,6 @@ int main(int argc, char** argv)
             {config.planeX, config.planeY, -config.planeDistanceMeters};
 
         const auto captureBackend = IC4Ext::D3D12BackendContext::FromCore(core);
-
         IC4Ext::CameraThreadOptions cameraThreadOptions;
         cameraThreadOptions.readTimeoutMs = config.cameraReadTimeoutMs;
         cameraThreadOptions.copyPerOutputQueue = false;
@@ -443,10 +458,13 @@ int main(int argc, char** argv)
         DisplayedPairMetadata displayedMetadata;
         std::size_t activeSlot = 0;
         bool planeSizeInitialized = false;
+        std::uint32_t inputWidth = 0;
+        std::uint32_t inputHeight = 0;
 
-        auto applySet = [&](IC4Ext::D3D12SyncedFrameSet& set) {
-            const auto* left = FindCamera(set, 0);
-            const auto* right = FindCamera(set, 1);
+        auto applySet = [&](const std::shared_ptr<IC4Ext::D3D12SyncedFrameSet>& owner) {
+            if (!owner) throw std::invalid_argument("applySet received null frame set");
+            const auto* left = FindCamera(*owner, 0);
+            const auto* right = FindCamera(*owner, 1);
             if (!left || !right) {
                 throw std::runtime_error(
                     "Synchronized set does not contain both camera indices 0 and 1");
@@ -457,10 +475,11 @@ int main(int argc, char** argv)
             plane.setTexture(VarjoXR::Eye::Left, upload.left);
             plane.setTexture(VarjoXR::Eye::Right, upload.right);
 
+            inputWidth = static_cast<std::uint32_t>(std::max(0, left->frame.format.width));
+            inputHeight = static_cast<std::uint32_t>(std::max(0, left->frame.format.height));
             if (!planeSizeInitialized) {
-                const float imageAspect = left->frame.format.height > 0
-                    ? static_cast<float>(left->frame.format.width) /
-                        static_cast<float>(left->frame.format.height)
+                const float imageAspect = inputHeight > 0
+                    ? static_cast<float>(inputWidth) / static_cast<float>(inputHeight)
                     : 1.0f;
                 const float heightMeters = config.planeHeightMeters > 0.0f
                     ? config.planeHeightMeters
@@ -470,13 +489,151 @@ int main(int argc, char** argv)
             }
 
             displayedMetadata = BuildPairMetadata(
-                set, left->frame, right->frame, config.timestampSource, clock);
+                *owner, left->frame, right->frame, config.timestampSource, clock);
         };
 
-        applySet(*initialSet);
+        auto currentSet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
+            std::move(*initialSet));
+        applySet(currentSet);
+        if (inputWidth == 0 || inputHeight == 0) {
+            throw std::runtime_error("IC4 produced an invalid frame size");
+        }
+
+        ActiveCalibrationInfo activeCalibration;
+
+        if (loadedCalibration) {
+            DualIC4Varjo::ValidateCalibrationInputGeometry(
+                *loadedCalibration, inputWidth, inputHeight);
+            if (!loadedCalibration->hasProfile(config.calibration.profile)) {
+                throw std::invalid_argument(
+                    "calibration JSON does not contain profile: " + config.calibration.profile);
+            }
+            DualIC4Varjo::ApplyCalibrationToPlane(
+                plane, *loadedCalibration, config.calibration.profile);
+            DualIC4Varjo::UpdatePlaneAspectFromCalibration(plane, *loadedCalibration);
+            activeCalibration.source = "json";
+            activeCalibration.profile = config.calibration.profile;
+            activeCalibration.revision = 1;
+        } else if (runLiveCalibration) {
+            DualIC4Varjo::LiveStereoCalibrationOptions liveOptions;
+            liveOptions.boardColumns = config.calibration.boardColumns;
+            liveOptions.boardRows = config.calibration.boardRows;
+            liveOptions.activeProfile = config.calibration.profile;
+            liveOptions.maxObservationCount = config.calibration.maxObservations;
+            liveOptions.minObservationCountForUpdate = config.calibration.minObservations;
+            liveOptions.minMeanCornerMotionPx = config.calibration.minCornerMotionPx;
+            liveOptions.fundamentalRansacThresholdPx = config.calibration.ransacThresholdPx;
+            liveOptions.useFindChessboardCornersSB = config.calibration.useChessboardSb;
+
+            DualIC4Varjo::LiveStereoCalibration liveCalibration(
+                core, inputWidth, inputHeight, liveOptions);
+            liveCalibration.start();
+            liveCalibration.submitLatest(currentSet);
+
+            std::uint64_t appliedRevision = 0;
+            std::cout
+                << "Live stereo calibration started.\n"
+                << "Show a " << config.calibration.boardColumns << " x "
+                << config.calibration.boardRows
+                << " inner-corner checkerboard at varied positions and angles.\n"
+                << "Press q after a valid live estimate is available.\n"
+                << "Press Esc or Ctrl+C to abort the application.\n";
+
+            std::shared_ptr<const Calibration::CalibrationSnapshot> finalSnapshot;
+            std::uint64_t calibrationRenderFrames = 0;
+            while (!gStopRequested.load()) {
+                if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) {
+                    gStopRequested.store(true);
+                    break;
+                }
+
+                if (auto latest = outputQueue->tryPopLatest()) {
+                    currentSet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
+                        std::move(*latest));
+                    applySet(currentSet);
+                    liveCalibration.submitLatest(currentSet);
+                }
+
+                if (auto snapshot = liveCalibration.latestSnapshot();
+                    snapshot && snapshot->revision != appliedRevision) {
+                    DualIC4Varjo::ValidateCalibrationInputGeometry(
+                        *snapshot->document, inputWidth, inputHeight);
+                    DualIC4Varjo::ApplyCalibrationToPlane(
+                        plane, *snapshot->document, snapshot->activeProfile);
+                    DualIC4Varjo::UpdatePlaneAspectFromCalibration(
+                        plane, *snapshot->document);
+                    appliedRevision = snapshot->revision;
+
+                    const auto& quality =
+                        snapshot->document->profile(snapshot->activeProfile).quality;
+                    std::cout << "[CALIB] revision=" << snapshot->revision
+                              << " profile=" << snapshot->activeProfile
+                              << " observations=" << quality.usedPairs;
+                    if (quality.medianAbsVerticalErrorPx) {
+                        std::cout << " medianVerticalError="
+                                  << std::fixed << std::setprecision(4)
+                                  << *quality.medianAbsVerticalErrorPx << " px";
+                    }
+                    std::cout << '\n';
+                }
+
+                if ((GetAsyncKeyState('Q') & 0x1) != 0) {
+                    auto snapshot = liveCalibration.latestSnapshot();
+                    if (snapshot && DualIC4Varjo::IsLiveCalibrationReady(
+                            *snapshot, config.calibration.minObservations)) {
+                        finalSnapshot = std::move(snapshot);
+                        break;
+                    }
+                    const auto stats = liveCalibration.stats();
+                    std::cout << "Calibration is not ready: accepted="
+                              << stats.acceptedObservations
+                              << ", required=" << config.calibration.minObservations
+                              << ". Continue moving the checkerboard.\n";
+                }
+
+                space.frameContext().frameNumber = ++calibrationRenderFrames;
+                space.update();
+                displayRing.markRendered(activeSlot);
+
+                if ((calibrationRenderFrames % 120u) == 0u) {
+                    liveCalibration.rethrowWorkerExceptionIfAny();
+                }
+            }
+
+            liveCalibration.stop();
+            if (gStopRequested.load()) {
+                stopThreads();
+                displayRing.waitIdle();
+                return 0;
+            }
+            if (!finalSnapshot || !finalSnapshot->document) {
+                throw std::runtime_error("live calibration ended without a valid snapshot");
+            }
+
+            DualIC4Varjo::ApplyCalibrationToPlane(
+                plane, *finalSnapshot->document, finalSnapshot->activeProfile);
+            DualIC4Varjo::UpdatePlaneAspectFromCalibration(
+                plane, *finalSnapshot->document);
+
+            if (calibrationOutputPath) {
+                const auto absolutePath = std::filesystem::absolute(*calibrationOutputPath);
+                finalSnapshot->document->saveJsonAtomically(absolutePath);
+                std::cout << "Saved calibration JSON: " << absolutePath.string() << '\n';
+            } else {
+                std::cout << "Calibration was not saved because --calib had no JSON path.\n";
+            }
+
+            activeCalibration.source = "live";
+            activeCalibration.profile = finalSnapshot->activeProfile;
+            activeCalibration.revision = finalSnapshot->revision;
+        }
+
+        if (!logger.start(config.metadataCsv)) {
+            throw std::runtime_error(logger.lastError());
+        }
 
         std::cout
-            << "Rendering started.\n"
+            << "Experiment rendering started.\n"
             << "  Arrow Left/Right : move Plane left/right by 0.01 m\n"
             << "  Arrow Up/Down    : move Plane up/down by 0.01 m\n"
             << "  Shift + Up       : move Plane farther by 0.01 m\n"
@@ -505,13 +662,14 @@ int main(int argc, char** argv)
             bool newFrameFromQueue = firstRender;
             firstRender = false;
             if (auto latest = outputQueue->tryPopLatest()) {
-                applySet(*latest);
+                currentSet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
+                    std::move(*latest));
+                applySet(currentSet);
                 newFrameFromQueue = true;
             }
 
             const PlaneKeyboardUpdate planeUpdate =
                 UpdatePlaneFromKeyboard(plane, planeKeys);
-
             const auto submitSteady = std::chrono::steady_clock::now();
             const auto submitUnixUs = clock.unixMicroseconds(submitSteady);
             bool submitOk = false;
@@ -525,6 +683,7 @@ int main(int argc, char** argv)
                     submitUnixUs,
                     newFrameFromQueue,
                     false,
+                    activeCalibration,
                     planeUpdate,
                     plane,
                     config.placementMode,
@@ -548,6 +707,7 @@ int main(int argc, char** argv)
                 submitUnixUs,
                 newFrameFromQueue,
                 submitOk,
+                activeCalibration,
                 planeUpdate,
                 plane,
                 config.placementMode,
