@@ -35,7 +35,7 @@ set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Do not update populated dep
 
 set(DUAL_IC4_VARJO_IC4EXT_TAG "v1.0.1")
 set(DUAL_IC4_VARJO_VARJOXR_TAG "v0.1.0")
-set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.12.1")
+set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
 set(DUAL_IC4_VARJO_CALIBRATION_COMMIT "8470b8e34b0bdd50546cd2215c8969b0512c3eaa")
 
 # -----------------------------------------------------------------------------
