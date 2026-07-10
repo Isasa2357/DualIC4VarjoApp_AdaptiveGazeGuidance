@@ -296,16 +296,6 @@ void PrintError(const char* label, const IC4Ext::ErrorInfo& error)
     std::cerr << label << " failed: " << error.where << ": " << error.message << '\n';
 }
 
-ThreadKit::Queues::QueueOptions MakeQueueOptions(
-    std::size_t maxSize,
-    ThreadKit::Queues::QueueOverflowPolicy overflowPolicy)
-{
-    ThreadKit::Queues::QueueOptions options{};
-    options.maxSize = maxSize;
-    options.overflowPolicy = overflowPolicy;
-    return options;
-}
-
 } // namespace
 
 int main(int argc, char** argv)
@@ -358,25 +348,15 @@ int main(int argc, char** argv)
     std::shared_ptr<D3D12CoreLib::D3D12Core> core;
     std::shared_ptr<VarjoSession> session;
 
-    auto displayInputQueue = std::make_shared<IC4Ext::D3D12IndexedFrameQueue>(
-        MakeQueueOptions(
-            config.inputQueueSize,
-            ThreadKit::Queues::QueueOverflowPolicy::DropOldest));
-    auto displayOutputQueue = std::make_shared<IC4Ext::D3D12SyncedFrameQueue>(
-        MakeQueueOptions(
-            config.outputQueueSize,
-            ThreadKit::Queues::QueueOverflowPolicy::DropOldest));
+    auto inputOptions = ThreadKit::Queues::QueueOptions{};
+    inputOptions.maxSize = config.inputQueueSize;
+    inputOptions.overflowPolicy = ThreadKit::Queues::QueueOverflowPolicy::DropOldest;
+    auto inputQueue = std::make_shared<IC4Ext::D3D12IndexedFrameQueue>(inputOptions);
 
-    std::shared_ptr<IC4Ext::D3D12IndexedFrameQueue> calibrationInputQueue;
-    std::shared_ptr<IC4Ext::D3D12SyncedFrameQueue> calibrationOutputQueue;
-    if (runLiveCalibration) {
-        calibrationInputQueue = std::make_shared<IC4Ext::D3D12IndexedFrameQueue>(
-            MakeQueueOptions(
-                config.inputQueueSize,
-                ThreadKit::Queues::QueueOverflowPolicy::DropOldest));
-        calibrationOutputQueue = std::make_shared<IC4Ext::D3D12SyncedFrameQueue>(
-            MakeQueueOptions(1, ThreadKit::Queues::QueueOverflowPolicy::DropOldest));
-    }
+    auto outputOptions = ThreadKit::Queues::QueueOptions{};
+    outputOptions.maxSize = config.outputQueueSize;
+    outputOptions.overflowPolicy = ThreadKit::Queues::QueueOverflowPolicy::DropOldest;
+    auto outputQueue = std::make_shared<IC4Ext::D3D12SyncedFrameQueue>(outputOptions);
 
     try {
         D3D12CoreLib::D3D12CoreConfig coreConfig{};
@@ -405,7 +385,7 @@ int main(int argc, char** argv)
         const auto captureBackend = IC4Ext::D3D12BackendContext::FromCore(core);
         IC4Ext::CameraThreadOptions cameraThreadOptions;
         cameraThreadOptions.readTimeoutMs = config.cameraReadTimeoutMs;
-        cameraThreadOptions.copyPerOutputQueue = runLiveCalibration;
+        cameraThreadOptions.copyPerOutputQueue = false;
         cameraThreadOptions.stopOnReadError = false;
 
         IC4Ext::D3D12CameraCaptureThread leftCamera(
@@ -418,15 +398,8 @@ int main(int argc, char** argv)
             DualIC4Varjo::MakeCaptureConfig(config, config.right),
             captureBackend,
             cameraThreadOptions);
-
-        // When two queues are present, IC4Ext copies for all bindings except the
-        // final one. Put calibration first so display receives the original frame.
-        if (runLiveCalibration) {
-            leftCamera.addOutputQueue(0, calibrationInputQueue);
-            rightCamera.addOutputQueue(1, calibrationInputQueue);
-        }
-        leftCamera.addOutputQueue(0, displayInputQueue);
-        rightCamera.addOutputQueue(1, displayInputQueue);
+        leftCamera.addOutputQueue(0, inputQueue);
+        rightCamera.addOutputQueue(1, inputQueue);
 
         IC4Ext::FrameSyncOptions syncOptions;
         syncOptions.policy = IC4Ext::FrameSyncPolicy::TimestampNearest;
@@ -435,28 +408,15 @@ int main(int argc, char** argv)
             std::llround(config.syncToleranceMs * 1'000'000.0));
         syncOptions.maxBufferedFramesPerCamera = config.syncBufferedFramesPerCamera;
         syncOptions.timestampSource = config.timestampSource;
+        IC4Ext::D3D12FrameSyncThread syncThread(inputQueue, outputQueue, syncOptions);
 
-        IC4Ext::D3D12FrameSyncThread displaySyncThread(
-            displayInputQueue, displayOutputQueue, syncOptions);
-        std::unique_ptr<IC4Ext::D3D12FrameSyncThread> calibrationSyncThread;
-        if (runLiveCalibration) {
-            calibrationSyncThread = std::make_unique<IC4Ext::D3D12FrameSyncThread>(
-                calibrationInputQueue, calibrationOutputQueue, syncOptions);
-        }
-
-        if (!displaySyncThread.start()) {
-            PrintError("Display FrameSyncThread", displaySyncThread.lastError());
-            return 1;
-        }
-        if (calibrationSyncThread && !calibrationSyncThread->start()) {
-            PrintError("Calibration FrameSyncThread", calibrationSyncThread->lastError());
-            displaySyncThread.stopAndJoin();
+        if (!syncThread.start()) {
+            PrintError("FrameSyncThread", syncThread.lastError());
             return 1;
         }
         if (!leftCamera.start()) {
             PrintError("Left camera", leftCamera.lastError());
-            if (calibrationSyncThread) calibrationSyncThread->stopAndJoin();
-            displaySyncThread.stopAndJoin();
+            syncThread.stopAndJoin();
             return 1;
         }
         if (config.cameraStartDelayMs > 0) {
@@ -466,30 +426,26 @@ int main(int argc, char** argv)
         if (!rightCamera.start()) {
             PrintError("Right camera", rightCamera.lastError());
             leftCamera.stopAndJoin();
-            if (calibrationSyncThread) calibrationSyncThread->stopAndJoin();
-            displaySyncThread.stopAndJoin();
+            syncThread.stopAndJoin();
             return 1;
         }
 
         auto stopThreads = [&]() {
             leftCamera.stopAndJoin();
             rightCamera.stopAndJoin();
-            if (calibrationSyncThread) calibrationSyncThread->stopAndJoin();
-            displaySyncThread.stopAndJoin();
-            displayInputQueue->close();
-            displayOutputQueue->close();
-            if (calibrationInputQueue) calibrationInputQueue->close();
-            if (calibrationOutputQueue) calibrationOutputQueue->close();
+            syncThread.stopAndJoin();
+            inputQueue->close();
+            outputQueue->close();
         };
 
-        auto initialSet = displayOutputQueue->waitPopLatestFor(
+        auto initialSet = outputQueue->waitPopLatestFor(
             std::chrono::milliseconds(config.initialFrameTimeoutMs));
         if (!initialSet) {
             const auto leftStats = leftCamera.stats();
             const auto rightStats = rightCamera.stats();
-            const auto syncStats = displaySyncThread.stats();
+            const auto syncStats = syncThread.stats();
             stopThreads();
-            std::cerr << "Timed out waiting for the first synchronized display frame set.\n"
+            std::cerr << "Timed out waiting for the first synchronized frame set.\n"
                       << "  left read=" << leftStats.readFrames
                       << " errors=" << leftStats.readErrors << '\n'
                       << "  right read=" << rightStats.readFrames
@@ -509,8 +465,8 @@ int main(int argc, char** argv)
         std::uint32_t inputWidth = 0;
         std::uint32_t inputHeight = 0;
 
-        auto applyDisplaySet = [&](const std::shared_ptr<IC4Ext::D3D12SyncedFrameSet>& owner) {
-            if (!owner) throw std::invalid_argument("applyDisplaySet received null frame set");
+        auto applySet = [&](const std::shared_ptr<IC4Ext::D3D12SyncedFrameSet>& owner) {
+            if (!owner) throw std::invalid_argument("applySet received null frame set");
             const auto* left = FindCamera(*owner, 0);
             const auto* right = FindCamera(*owner, 1);
             if (!left || !right) {
@@ -540,9 +496,9 @@ int main(int argc, char** argv)
                 *owner, left->frame, right->frame, config.timestampSource, clock);
         };
 
-        auto currentDisplaySet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
+        auto currentSet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
             std::move(*initialSet));
-        applyDisplaySet(currentDisplaySet);
+        applySet(currentSet);
         if (inputWidth == 0 || inputHeight == 0) {
             throw std::runtime_error("IC4 produced an invalid frame size");
         }
@@ -576,6 +532,7 @@ int main(int argc, char** argv)
             DualIC4Varjo::LiveStereoCalibration liveCalibration(
                 core, inputWidth, inputHeight, liveOptions);
             liveCalibration.start();
+            liveCalibration.submitLatest(currentSet);
 
             std::uint64_t appliedRevision = 0;
             std::cout
@@ -594,15 +551,11 @@ int main(int argc, char** argv)
                     break;
                 }
 
-                if (auto latestDisplay = displayOutputQueue->tryPopLatest()) {
-                    currentDisplaySet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
-                        std::move(*latestDisplay));
-                    applyDisplaySet(currentDisplaySet);
-                }
-                if (auto latestCalibration = calibrationOutputQueue->tryPopLatest()) {
-                    liveCalibration.submitLatest(
-                        std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
-                            std::move(*latestCalibration)));
+                if (auto latest = outputQueue->tryPopLatest()) {
+                    currentSet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
+                        std::move(*latest));
+                    applySet(currentSet);
+                    liveCalibration.submitLatest(currentSet);
                 }
 
                 if (auto snapshot = liveCalibration.latestSnapshot();
@@ -712,10 +665,10 @@ int main(int argc, char** argv)
 
             bool newFrameFromQueue = firstRender;
             firstRender = false;
-            if (auto latest = displayOutputQueue->tryPopLatest()) {
-                currentDisplaySet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
+            if (auto latest = outputQueue->tryPopLatest()) {
+                currentSet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
                     std::move(*latest));
-                applyDisplaySet(currentDisplaySet);
+                applySet(currentSet);
                 newFrameFromQueue = true;
             }
 
@@ -742,8 +695,8 @@ int main(int argc, char** argv)
                     DualIC4Varjo::TimestampSourceName(config.timestampSource),
                     activeSlot,
                     clock,
-                    displaySyncThread.stats(),
-                    displayOutputQueue->stats(),
+                    syncThread.stats(),
+                    outputQueue->stats(),
                     leftCamera.stats(),
                     rightCamera.stats());
                 if (!logger.enqueue(std::move(failedRow))) {
@@ -766,8 +719,8 @@ int main(int argc, char** argv)
                 DualIC4Varjo::TimestampSourceName(config.timestampSource),
                 activeSlot,
                 clock,
-                displaySyncThread.stats(),
-                displayOutputQueue->stats(),
+                syncThread.stats(),
+                outputQueue->stats(),
                 leftCamera.stats(),
                 rightCamera.stats());
             if (!logger.enqueue(std::move(row))) {
@@ -782,12 +735,12 @@ int main(int argc, char** argv)
 
         const auto leftStats = leftCamera.stats();
         const auto rightStats = rightCamera.stats();
-        const auto syncStats = displaySyncThread.stats();
+        const auto syncStats = syncThread.stats();
         std::cout << "Stopped.\n"
                   << "  left frames: " << leftStats.readFrames << '\n'
                   << "  right frames: " << rightStats.readFrames << '\n'
-                  << "  synced display sets: " << syncStats.emittedSets << '\n'
-                  << "  display sync drops: " << syncStats.droppedFrames << '\n'
+                  << "  synced sets: " << syncStats.emittedSets << '\n'
+                  << "  sync drops: " << syncStats.droppedFrames << '\n'
                   << "  metadata: " << config.metadataCsv.string() << '\n';
         return 0;
     } catch (const std::exception& e) {
