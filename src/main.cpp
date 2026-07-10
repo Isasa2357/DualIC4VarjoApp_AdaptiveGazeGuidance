@@ -22,12 +22,16 @@
 #include <cmath>
 #include <cstdint>
 #include <exception>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 namespace {
+
+constexpr float kPlaneMoveStepMeters = 0.01f;
 
 std::atomic<bool> gStopRequested{false};
 
@@ -44,6 +48,85 @@ BOOL WINAPI ConsoleControlHandler(DWORD controlType)
     default:
         return FALSE;
     }
+}
+
+class ArrowKeyEdgeTracker {
+public:
+    bool leftPressed() { return pressed(VK_LEFT, leftDown_); }
+    bool rightPressed() { return pressed(VK_RIGHT, rightDown_); }
+    bool upPressed() { return pressed(VK_UP, upDown_); }
+    bool downPressed() { return pressed(VK_DOWN, downDown_); }
+
+private:
+    static bool pressed(int virtualKey, bool& previousDown)
+    {
+        const bool currentDown = (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+        const bool pressedNow = currentDown && !previousDown;
+        previousDown = currentDown;
+        return pressedNow;
+    }
+
+    bool leftDown_ = false;
+    bool rightDown_ = false;
+    bool upDown_ = false;
+    bool downDown_ = false;
+};
+
+const char* PlacementModeName(VarjoXR::PlacementMode mode) noexcept
+{
+    return mode == VarjoXR::PlacementMode::HeadRelative ? "head" : "world";
+}
+
+bool UpdatePlanePositionFromKeyboard(
+    VarjoXR::XRPlane& plane,
+    ArrowKeyEdgeTracker& keys)
+{
+    const bool shiftDown =
+        (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+
+    const bool left = keys.leftPressed();
+    const bool right = keys.rightPressed();
+    const bool up = keys.upPressed();
+    const bool down = keys.downPressed();
+
+    auto& position = plane.transform().position;
+    bool moved = false;
+
+    if (left) {
+        position.x -= kPlaneMoveStepMeters;
+        moved = true;
+    }
+    if (right) {
+        position.x += kPlaneMoveStepMeters;
+        moved = true;
+    }
+    if (up) {
+        if (shiftDown) {
+            // The Plane starts at negative Z. More negative means farther away.
+            position.z -= kPlaneMoveStepMeters;
+        } else {
+            position.y += kPlaneMoveStepMeters;
+        }
+        moved = true;
+    }
+    if (down) {
+        if (shiftDown) {
+            position.z += kPlaneMoveStepMeters;
+        } else {
+            position.y -= kPlaneMoveStepMeters;
+        }
+        moved = true;
+    }
+
+    if (moved) {
+        std::cout << std::fixed << std::setprecision(3)
+                  << "Plane position: x=" << position.x
+                  << " m, y=" << position.y
+                  << " m, z=" << position.z << " m\n";
+    }
+    return moved;
 }
 
 const IC4Ext::D3D12IndexedCameraFrame* FindCamera(
@@ -84,13 +167,9 @@ DualIC4Varjo::CameraFrameMetadataRow BuildCameraMetadata(
     DualIC4Varjo::CameraFrameMetadataRow row;
     row.frameNumber = frame.timing.frameNumber;
     row.deviceTimestampNs = frame.timing.deviceTimestampNs;
-    row.hostReceivedSteadyUs = clock.steadyMicroseconds(frame.timing.hostReceivedTime);
     row.hostReceivedUnixUs = clock.unixMicroseconds(frame.timing.hostReceivedTime);
-    row.hostReceivedLocalIso8601 = clock.localIso8601(row.hostReceivedUnixUs);
     row.width = frame.format.width;
     row.height = frame.format.height;
-    row.dxgiFormat = static_cast<int>(frame.dxgiFormat);
-    row.chunk = frame.chunkMetadata;
     return row;
 }
 
@@ -120,6 +199,53 @@ DisplayedPairMetadata BuildPairMetadata(
     metadata.left = BuildCameraMetadata(left, clock);
     metadata.right = BuildCameraMetadata(right, clock);
     return metadata;
+}
+
+DualIC4Varjo::RenderedFrameMetadataRow BuildRenderedFrameMetadata(
+    std::uint64_t renderRowIndex,
+    std::int64_t renderSubmitUnixUs,
+    bool newFrameFromQueue,
+    bool submitOk,
+    bool planeMoved,
+    const VarjoXR::XRPlane& plane,
+    VarjoXR::PlacementMode placementMode,
+    const DisplayedPairMetadata& displayedMetadata,
+    const char* syncTimestampSource,
+    std::size_t displaySlotIndex,
+    const DualIC4Varjo::ClockMapper& clock,
+    const IC4Ext::FrameSyncStats& syncStats,
+    const ThreadKit::Queues::QueueStats& syncedQueueStats,
+    const IC4Ext::CameraThreadStats& leftCameraStats,
+    const IC4Ext::CameraThreadStats& rightCameraStats)
+{
+    DualIC4Varjo::RenderedFrameMetadataRow row;
+    row.renderRowIndex = renderRowIndex;
+    row.renderSubmitUnixUs = renderSubmitUnixUs;
+    row.renderSubmitLocalIso8601 = clock.localIso8601(renderSubmitUnixUs);
+    row.newFrameFromQueue = newFrameFromQueue;
+    row.submitOk = submitOk;
+
+    const auto& position = plane.transform().position;
+    row.planeMoved = planeMoved;
+    row.planePlacementMode = PlacementModeName(placementMode);
+    row.planeX = position.x;
+    row.planeY = position.y;
+    row.planeZ = position.z;
+
+    row.syncGroupId = displayedMetadata.syncGroupId;
+    row.syncEmittedUnixUs = clock.unixMicroseconds(displayedMetadata.emittedTime);
+    row.syncTimestampSource = syncTimestampSource ? syncTimestampSource : "unknown";
+    row.syncTimestampDiffNs = displayedMetadata.syncTimestampDiffNs;
+    row.hostReceivedDiffUs = displayedMetadata.hostReceivedDiffUs;
+
+    row.left = displayedMetadata.left;
+    row.right = displayedMetadata.right;
+    row.displaySlotIndex = displaySlotIndex;
+    row.syncStats = syncStats;
+    row.syncedQueueStats = syncedQueueStats;
+    row.leftCameraStats = leftCameraStats;
+    row.rightCameraStats = rightCameraStats;
+    return row;
 }
 
 void PrintError(const char* label, const IC4Ext::ErrorInfo& error)
@@ -188,11 +314,13 @@ int main(int argc, char** argv)
 
         auto backend = VarjoXR::Backends::D3D12::CreateBackend(core);
         VarjoXR::XRSpace space({session, std::move(backend)});
-        auto& d3dBackend = static_cast<VarjoXR::Backends::D3D12::D3D12Backend&>(space.backend());
+        auto& d3dBackend =
+            static_cast<VarjoXR::Backends::D3D12::D3D12Backend&>(space.backend());
 
         auto& plane = space.createPlane({config.planeWidthMeters, config.planeWidthMeters});
         plane.setPlacementMode(config.placementMode);
-        plane.transform().position = {config.planeX, config.planeY, -config.planeDistanceMeters};
+        plane.transform().position =
+            {config.planeX, config.planeY, -config.planeDistanceMeters};
 
         const auto captureBackend = IC4Ext::D3D12BackendContext::FromCore(core);
 
@@ -233,7 +361,8 @@ int main(int argc, char** argv)
             return 1;
         }
         if (config.cameraStartDelayMs > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(config.cameraStartDelayMs));
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(config.cameraStartDelayMs));
         }
         if (!rightCamera.start()) {
             PrintError("Right camera", rightCamera.lastError());
@@ -258,15 +387,19 @@ int main(int argc, char** argv)
             const auto syncStats = syncThread.stats();
             stopThreads();
             std::cerr << "Timed out waiting for the first synchronized frame set.\n"
-                      << "  left read=" << leftStats.readFrames << " errors=" << leftStats.readErrors << '\n'
-                      << "  right read=" << rightStats.readFrames << " errors=" << rightStats.readErrors << '\n'
-                      << "  sync input=" << syncStats.inputFrames << " emitted=" << syncStats.emittedSets
+                      << "  left read=" << leftStats.readFrames
+                      << " errors=" << leftStats.readErrors << '\n'
+                      << "  right read=" << rightStats.readFrames
+                      << " errors=" << rightStats.readErrors << '\n'
+                      << "  sync input=" << syncStats.inputFrames
+                      << " emitted=" << syncStats.emittedSets
                       << " dropped=" << syncStats.droppedFrames << '\n';
             return 1;
         }
 
         DualIC4Varjo::ClockMapper clock;
-        DualIC4Varjo::StereoDisplayTextureRing displayRing(core, d3dBackend, config.displayRingSize);
+        DualIC4Varjo::StereoDisplayTextureRing displayRing(
+            core, d3dBackend, config.displayRingSize);
         DisplayedPairMetadata displayedMetadata;
         std::size_t activeSlot = 0;
 
@@ -274,15 +407,18 @@ int main(int argc, char** argv)
             const auto* left = FindCamera(set, 0);
             const auto* right = FindCamera(set, 1);
             if (!left || !right) {
-                throw std::runtime_error("Synchronized set does not contain both camera indices 0 and 1");
+                throw std::runtime_error(
+                    "Synchronized set does not contain both camera indices 0 and 1");
             }
+
             const auto upload = displayRing.upload(left->frame, right->frame);
             activeSlot = upload.slotIndex;
             plane.setTexture(VarjoXR::Eye::Left, upload.left);
             plane.setTexture(VarjoXR::Eye::Right, upload.right);
 
             const float imageAspect = left->frame.format.height > 0
-                ? static_cast<float>(left->frame.format.width) / static_cast<float>(left->frame.format.height)
+                ? static_cast<float>(left->frame.format.width) /
+                    static_cast<float>(left->frame.format.height)
                 : 1.0f;
             const float heightMeters = config.planeHeightMeters > 0.0f
                 ? config.planeHeightMeters
@@ -295,10 +431,18 @@ int main(int argc, char** argv)
 
         applySet(*initialSet);
 
-        std::cout << "Rendering started. Press Esc or Ctrl+C to stop.\n";
+        std::cout
+            << "Rendering started.\n"
+            << "  Arrow Left/Right : move Plane left/right by 0.01 m\n"
+            << "  Arrow Up/Down    : move Plane up/down by 0.01 m\n"
+            << "  Shift + Up       : move Plane farther by 0.01 m\n"
+            << "  Shift + Down     : move Plane closer by 0.01 m\n"
+            << "  Esc or Ctrl+C    : stop\n";
+
         const auto runStart = std::chrono::steady_clock::now();
         std::uint64_t renderRowIndex = 0;
         bool firstRender = true;
+        ArrowKeyEdgeTracker planeKeys;
 
         while (!gStopRequested.load()) {
             if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) {
@@ -306,7 +450,9 @@ int main(int argc, char** argv)
                 break;
             }
             if (config.maxRuntimeSeconds > 0.0 &&
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - runStart).count() >= config.maxRuntimeSeconds) {
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - runStart).count() >=
+                    config.maxRuntimeSeconds) {
                 break;
             }
 
@@ -317,6 +463,9 @@ int main(int argc, char** argv)
                 newFrameFromQueue = true;
             }
 
+            const bool planeMoved =
+                UpdatePlanePositionFromKeyboard(plane, planeKeys);
+
             const auto submitSteady = std::chrono::steady_clock::now();
             const auto submitUnixUs = clock.unixMicroseconds(submitSteady);
             bool submitOk = false;
@@ -325,56 +474,48 @@ int main(int argc, char** argv)
                 submitOk = true;
                 displayRing.markRendered(activeSlot);
             } catch (...) {
-                DualIC4Varjo::RenderedFrameMetadataRow failedRow;
-                failedRow.renderRowIndex = renderRowIndex++;
-                failedRow.renderSubmitUnixUs = submitUnixUs;
-                failedRow.renderSubmitLocalIso8601 = clock.localIso8601(submitUnixUs);
-                failedRow.renderSubmitSteadyUs = clock.steadyMicroseconds(submitSteady);
-                failedRow.newFrameFromQueue = newFrameFromQueue;
-                failedRow.submitOk = false;
-                failedRow.syncGroupId = displayedMetadata.syncGroupId;
-                failedRow.syncEmittedSteadyUs = clock.steadyMicroseconds(displayedMetadata.emittedTime);
-                failedRow.syncEmittedUnixUs = clock.unixMicroseconds(displayedMetadata.emittedTime);
-                failedRow.syncTimestampSource = DualIC4Varjo::TimestampSourceName(config.timestampSource);
-                failedRow.syncTimestampDiffNs = displayedMetadata.syncTimestampDiffNs;
-                failedRow.syncTimestampDiffMs = displayedMetadata.syncTimestampDiffNs / 1'000'000.0;
-                failedRow.hostReceivedDiffUs = displayedMetadata.hostReceivedDiffUs;
-                failedRow.hostReceivedDiffMs = displayedMetadata.hostReceivedDiffUs / 1000.0;
-                failedRow.left = displayedMetadata.left;
-                failedRow.right = displayedMetadata.right;
-                failedRow.displaySlotIndex = activeSlot;
-                failedRow.syncStats = syncThread.stats();
-                failedRow.syncedQueueStats = outputQueue->stats();
-                failedRow.leftCameraStats = leftCamera.stats();
-                failedRow.rightCameraStats = rightCamera.stats();
-                logger.enqueue(std::move(failedRow));
+                auto failedRow = BuildRenderedFrameMetadata(
+                    renderRowIndex++,
+                    submitUnixUs,
+                    newFrameFromQueue,
+                    false,
+                    planeMoved,
+                    plane,
+                    config.placementMode,
+                    displayedMetadata,
+                    DualIC4Varjo::TimestampSourceName(config.timestampSource),
+                    activeSlot,
+                    clock,
+                    syncThread.stats(),
+                    outputQueue->stats(),
+                    leftCamera.stats(),
+                    rightCamera.stats());
+                if (!logger.enqueue(std::move(failedRow))) {
+                    std::cerr << "Metadata logger failed while recording a render error: "
+                              << logger.lastError() << '\n';
+                }
                 throw;
             }
 
-            DualIC4Varjo::RenderedFrameMetadataRow row;
-            row.renderRowIndex = renderRowIndex++;
-            row.renderSubmitUnixUs = submitUnixUs;
-            row.renderSubmitLocalIso8601 = clock.localIso8601(submitUnixUs);
-            row.renderSubmitSteadyUs = clock.steadyMicroseconds(submitSteady);
-            row.newFrameFromQueue = newFrameFromQueue;
-            row.submitOk = submitOk;
-            row.syncGroupId = displayedMetadata.syncGroupId;
-            row.syncEmittedSteadyUs = clock.steadyMicroseconds(displayedMetadata.emittedTime);
-            row.syncEmittedUnixUs = clock.unixMicroseconds(displayedMetadata.emittedTime);
-            row.syncTimestampSource = DualIC4Varjo::TimestampSourceName(config.timestampSource);
-            row.syncTimestampDiffNs = displayedMetadata.syncTimestampDiffNs;
-            row.syncTimestampDiffMs = displayedMetadata.syncTimestampDiffNs / 1'000'000.0;
-            row.hostReceivedDiffUs = displayedMetadata.hostReceivedDiffUs;
-            row.hostReceivedDiffMs = displayedMetadata.hostReceivedDiffUs / 1000.0;
-            row.left = displayedMetadata.left;
-            row.right = displayedMetadata.right;
-            row.displaySlotIndex = activeSlot;
-            row.syncStats = syncThread.stats();
-            row.syncedQueueStats = outputQueue->stats();
-            row.leftCameraStats = leftCamera.stats();
-            row.rightCameraStats = rightCamera.stats();
+            auto row = BuildRenderedFrameMetadata(
+                renderRowIndex++,
+                submitUnixUs,
+                newFrameFromQueue,
+                submitOk,
+                planeMoved,
+                plane,
+                config.placementMode,
+                displayedMetadata,
+                DualIC4Varjo::TimestampSourceName(config.timestampSource),
+                activeSlot,
+                clock,
+                syncThread.stats(),
+                outputQueue->stats(),
+                leftCamera.stats(),
+                rightCamera.stats());
             if (!logger.enqueue(std::move(row))) {
-                throw std::runtime_error("Metadata logger failed: " + logger.lastError());
+                throw std::runtime_error(
+                    "Metadata logger failed: " + logger.lastError());
             }
         }
 
@@ -395,7 +536,10 @@ int main(int argc, char** argv)
     } catch (const std::exception& e) {
         gStopRequested.store(true);
         if (core) {
-            try { core->WaitIdle(); } catch (...) {}
+            try {
+                core->WaitIdle();
+            } catch (...) {
+            }
         }
         logger.stop();
         std::cerr << "Fatal error: " << e.what() << '\n';
