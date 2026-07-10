@@ -140,20 +140,23 @@ void VarjoServiceLogging::pump()
 
 void VarjoServiceLogging::stop() noexcept
 {
+    // stop() is intentionally called for every constructed service, even when
+    // start() did not complete. Each VarjoToolkit service supports idempotent
+    // stop and this also cleans up partial initialization after an exception.
     try {
-        if (eyeStarted_ && eyeTracking_) eyeTracking_->stop();
+        if (eyeTracking_) eyeTracking_->stop();
     } catch (...) {
     }
     eyeStarted_ = false;
 
     try {
-        if (imuStarted_ && imu_) imu_->stop();
+        if (imu_) imu_->stop();
     } catch (...) {
     }
     imuStarted_ = false;
 
     try {
-        if (vstStarted_ && vst_) vst_->stop();
+        if (vst_) vst_->stop();
     } catch (...) {
     }
     vstStarted_ = false;
