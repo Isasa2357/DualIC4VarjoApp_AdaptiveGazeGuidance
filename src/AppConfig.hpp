@@ -20,9 +20,24 @@ struct CameraAppConfig {
     std::optional<int> offsetY;
 };
 
+struct CalibrationAppConfig {
+    bool enabled = false;
+    std::optional<std::filesystem::path> jsonPath;
+
+    std::uint32_t boardColumns = 12;
+    std::uint32_t boardRows = 9;
+    std::string profile = "affine_vertical";
+    std::size_t maxObservations = 30;
+    std::size_t minObservations = 8;
+    double minCornerMotionPx = 15.0;
+    double ransacThresholdPx = 1.5;
+    bool useChessboardSb = false;
+};
+
 struct AppConfig {
     CameraAppConfig left;
     CameraAppConfig right;
+    CalibrationAppConfig calibration;
 
     int width = 0;
     int height = 0;
