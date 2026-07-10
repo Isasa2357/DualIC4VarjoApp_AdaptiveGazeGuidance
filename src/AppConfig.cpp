@@ -52,11 +52,6 @@ bool ParseBool(const std::string& text, bool& value)
     return false;
 }
 
-bool LooksLikeOption(const char* text)
-{
-    return text && text[0] == '-';
-}
-
 bool IsCalibrationProfile(const std::string& value)
 {
     return value == "uncalibrated" || value == "affine_vertical" || value == "affine_full";
@@ -87,19 +82,19 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
             config.showHelp = true;
             return true;
         }
-        if (option == "--calib") {
-            config.calibration.enabled = true;
-            if (i + 1 < argc && !LooksLikeOption(argv[i + 1])) {
-                config.calibration.jsonPath = std::filesystem::path(argv[++i]);
-            }
-            continue;
-        }
 
         const char* raw = requireValue(i, option);
         if (!raw) return false;
         const std::string value = raw;
 
-        if (option == "--left-device-index") {
+        if (option == "--calib") {
+            config.calibration.enabled = true;
+            if (value == "-") {
+                config.calibration.jsonPath.reset();
+            } else {
+                config.calibration.jsonPath = std::filesystem::path(value);
+            }
+        } else if (option == "--left-device-index") {
             if (!ParseNumber(value, config.left.selector.deviceIndex)) return invalidValue(option, value);
         } else if (option == "--right-device-index") {
             if (!ParseNumber(value, config.right.selector.deviceIndex)) return invalidValue(option, value);
@@ -201,6 +196,7 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
         } else if (option == "--calib-profile") {
             if (!IsCalibrationProfile(value)) return invalidValue(option, value);
             config.calibration.profile = value;
+            config.calibration.profileExplicit = true;
         } else if (option == "--calib-max-observations") {
             if (!ParseNumber(value, config.calibration.maxObservations)) return invalidValue(option, value);
         } else if (option == "--calib-min-observations") {
@@ -283,7 +279,7 @@ void PrintUsage(std::ostream& out)
         "  --sync-timestamp host|device|auto\n"
         "  --camera-start-delay-ms N\n\n"
         "Stereo calibration:\n"
-        "  --calib [JSON_PATH]             Existing file: load; missing/no path: run live calibration\n"
+        "  --calib JSON_PATH|-             Existing path: load; missing path: calibrate/save; '-': calibrate without saving\n"
         "  --calib-board-cols N            Default: 12 inner corners\n"
         "  --calib-board-rows N            Default: 9 inner corners\n"
         "  --calib-profile NAME            affine_vertical (default), affine_full, uncalibrated\n"
