@@ -28,10 +28,13 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace {
 
 constexpr float kPlaneMoveStepMeters = 0.01f;
+constexpr float kPlaneResizeStepMeters = 0.01f;
+constexpr float kMinimumPlaneWidthMeters = 0.05f;
 
 std::atomic<bool> gStopRequested{false};
 
@@ -72,36 +75,65 @@ private:
     bool downDown_ = false;
 };
 
+struct PlaneKeyboardUpdate {
+    bool moved = false;
+    bool resized = false;
+};
+
+bool IsShiftDown()
+{
+    return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
+           (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
+           (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+}
+
 const char* PlacementModeName(VarjoXR::PlacementMode mode) noexcept
 {
     return mode == VarjoXR::PlacementMode::HeadRelative ? "head" : "world";
 }
 
-bool UpdatePlanePositionFromKeyboard(
+PlaneKeyboardUpdate UpdatePlaneFromKeyboard(
     VarjoXR::XRPlane& plane,
     ArrowKeyEdgeTracker& keys)
 {
-    const bool shiftDown =
-        (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
-        (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
-        (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
-
+    const bool shiftDown = IsShiftDown();
     const bool left = keys.leftPressed();
     const bool right = keys.rightPressed();
     const bool up = keys.upPressed();
     const bool down = keys.downPressed();
 
+    PlaneKeyboardUpdate update;
     auto& position = plane.transform().position;
-    bool moved = false;
 
-    if (left) {
-        position.x -= kPlaneMoveStepMeters;
-        moved = true;
+    if (shiftDown) {
+        float widthDelta = 0.0f;
+        if (left) widthDelta -= kPlaneResizeStepMeters;
+        if (right) widthDelta += kPlaneResizeStepMeters;
+
+        if (widthDelta != 0.0f) {
+            const auto currentSize = plane.size();
+            if (currentSize.x > 0.0f && currentSize.y > 0.0f) {
+                const float newWidth = std::max(
+                    kMinimumPlaneWidthMeters,
+                    currentSize.x + widthDelta);
+                if (std::abs(newWidth - currentSize.x) > 0.000001f) {
+                    const float heightPerWidth = currentSize.y / currentSize.x;
+                    plane.setSize({newWidth, newWidth * heightPerWidth});
+                    update.resized = true;
+                }
+            }
+        }
+    } else {
+        if (left) {
+            position.x -= kPlaneMoveStepMeters;
+            update.moved = true;
+        }
+        if (right) {
+            position.x += kPlaneMoveStepMeters;
+            update.moved = true;
+        }
     }
-    if (right) {
-        position.x += kPlaneMoveStepMeters;
-        moved = true;
-    }
+
     if (up) {
         if (shiftDown) {
             // The Plane starts at negative Z. More negative means farther away.
@@ -109,7 +141,7 @@ bool UpdatePlanePositionFromKeyboard(
         } else {
             position.y += kPlaneMoveStepMeters;
         }
-        moved = true;
+        update.moved = true;
     }
     if (down) {
         if (shiftDown) {
@@ -117,16 +149,20 @@ bool UpdatePlanePositionFromKeyboard(
         } else {
             position.y -= kPlaneMoveStepMeters;
         }
-        moved = true;
+        update.moved = true;
     }
 
-    if (moved) {
+    if (update.moved || update.resized) {
+        const auto size = plane.size();
         std::cout << std::fixed << std::setprecision(3)
-                  << "Plane position: x=" << position.x
+                  << "Plane: x=" << position.x
                   << " m, y=" << position.y
-                  << " m, z=" << position.z << " m\n";
+                  << " m, z=" << position.z
+                  << " m, width=" << size.x
+                  << " m, height=" << size.y << " m\n";
     }
-    return moved;
+
+    return update;
 }
 
 const IC4Ext::D3D12IndexedCameraFrame* FindCamera(
@@ -206,7 +242,7 @@ DualIC4Varjo::RenderedFrameMetadataRow BuildRenderedFrameMetadata(
     std::int64_t renderSubmitUnixUs,
     bool newFrameFromQueue,
     bool submitOk,
-    bool planeMoved,
+    const PlaneKeyboardUpdate& planeUpdate,
     const VarjoXR::XRPlane& plane,
     VarjoXR::PlacementMode placementMode,
     const DisplayedPairMetadata& displayedMetadata,
@@ -226,11 +262,15 @@ DualIC4Varjo::RenderedFrameMetadataRow BuildRenderedFrameMetadata(
     row.submitOk = submitOk;
 
     const auto& position = plane.transform().position;
-    row.planeMoved = planeMoved;
+    const auto size = plane.size();
+    row.planeMoved = planeUpdate.moved;
+    row.planeResized = planeUpdate.resized;
     row.planePlacementMode = PlacementModeName(placementMode);
     row.planeX = position.x;
     row.planeY = position.y;
     row.planeZ = position.z;
+    row.planeWidth = size.x;
+    row.planeHeight = size.y;
 
     row.syncGroupId = displayedMetadata.syncGroupId;
     row.syncEmittedUnixUs = clock.unixMicroseconds(displayedMetadata.emittedTime);
@@ -402,6 +442,7 @@ int main(int argc, char** argv)
             core, d3dBackend, config.displayRingSize);
         DisplayedPairMetadata displayedMetadata;
         std::size_t activeSlot = 0;
+        bool planeSizeInitialized = false;
 
         auto applySet = [&](IC4Ext::D3D12SyncedFrameSet& set) {
             const auto* left = FindCamera(set, 0);
@@ -416,14 +457,17 @@ int main(int argc, char** argv)
             plane.setTexture(VarjoXR::Eye::Left, upload.left);
             plane.setTexture(VarjoXR::Eye::Right, upload.right);
 
-            const float imageAspect = left->frame.format.height > 0
-                ? static_cast<float>(left->frame.format.width) /
-                    static_cast<float>(left->frame.format.height)
-                : 1.0f;
-            const float heightMeters = config.planeHeightMeters > 0.0f
-                ? config.planeHeightMeters
-                : config.planeWidthMeters / std::max(0.001f, imageAspect);
-            plane.setSize({config.planeWidthMeters, heightMeters});
+            if (!planeSizeInitialized) {
+                const float imageAspect = left->frame.format.height > 0
+                    ? static_cast<float>(left->frame.format.width) /
+                        static_cast<float>(left->frame.format.height)
+                    : 1.0f;
+                const float heightMeters = config.planeHeightMeters > 0.0f
+                    ? config.planeHeightMeters
+                    : config.planeWidthMeters / std::max(0.001f, imageAspect);
+                plane.setSize({config.planeWidthMeters, heightMeters});
+                planeSizeInitialized = true;
+            }
 
             displayedMetadata = BuildPairMetadata(
                 set, left->frame, right->frame, config.timestampSource, clock);
@@ -437,6 +481,8 @@ int main(int argc, char** argv)
             << "  Arrow Up/Down    : move Plane up/down by 0.01 m\n"
             << "  Shift + Up       : move Plane farther by 0.01 m\n"
             << "  Shift + Down     : move Plane closer by 0.01 m\n"
+            << "  Shift + Left     : reduce Plane width by 0.01 m\n"
+            << "  Shift + Right    : increase Plane width by 0.01 m\n"
             << "  Esc or Ctrl+C    : stop\n";
 
         const auto runStart = std::chrono::steady_clock::now();
@@ -463,8 +509,8 @@ int main(int argc, char** argv)
                 newFrameFromQueue = true;
             }
 
-            const bool planeMoved =
-                UpdatePlanePositionFromKeyboard(plane, planeKeys);
+            const PlaneKeyboardUpdate planeUpdate =
+                UpdatePlaneFromKeyboard(plane, planeKeys);
 
             const auto submitSteady = std::chrono::steady_clock::now();
             const auto submitUnixUs = clock.unixMicroseconds(submitSteady);
@@ -479,7 +525,7 @@ int main(int argc, char** argv)
                     submitUnixUs,
                     newFrameFromQueue,
                     false,
-                    planeMoved,
+                    planeUpdate,
                     plane,
                     config.placementMode,
                     displayedMetadata,
@@ -502,7 +548,7 @@ int main(int argc, char** argv)
                 submitUnixUs,
                 newFrameFromQueue,
                 submitOk,
-                planeMoved,
+                planeUpdate,
                 plane,
                 config.placementMode,
                 displayedMetadata,
