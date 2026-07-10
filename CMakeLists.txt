@@ -1,7 +1,29 @@
 cmake_minimum_required(VERSION 3.21)
 
+# Resolve a vcpkg toolchain before project() so find_package(OpenCV) can use the
+# user's existing x64-windows installation. An explicitly supplied toolchain
+# always takes precedence.
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE OR CMAKE_TOOLCHAIN_FILE STREQUAL "")
+    set(_dual_vcpkg_root "")
+    if(DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+        file(TO_CMAKE_PATH "$ENV{VCPKG_ROOT}" _dual_vcpkg_root)
+    else()
+        find_program(DUAL_IC4_VARJO_VCPKG_EXECUTABLE NAMES vcpkg)
+        if(DUAL_IC4_VARJO_VCPKG_EXECUTABLE)
+            get_filename_component(_dual_vcpkg_root "${DUAL_IC4_VARJO_VCPKG_EXECUTABLE}" DIRECTORY)
+        endif()
+    endif()
+    if(_dual_vcpkg_root AND EXISTS "${_dual_vcpkg_root}/scripts/buildsystems/vcpkg.cmake")
+        set(CMAKE_TOOLCHAIN_FILE
+            "${_dual_vcpkg_root}/scripts/buildsystems/vcpkg.cmake"
+            CACHE FILEPATH "vcpkg toolchain used for OpenCV" FORCE)
+        message(STATUS "DualIC4VarjoApp: auto-detected vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
+    endif()
+endif()
+set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg target triplet")
+
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.1.0
+    VERSION 0.2.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -11,22 +33,14 @@ endif()
 include(FetchContent)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Do not update populated dependencies automatically" FORCE)
 
-# Explicit dependency versions requested by the application.
 set(DUAL_IC4_VARJO_IC4EXT_TAG "v1.0.1")
 set(DUAL_IC4_VARJO_VARJOXR_TAG "v0.1.0")
 set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.12.1")
+set(DUAL_IC4_VARJO_CALIBRATION_COMMIT "8470b8e34b0bdd50546cd2215c8969b0512c3eaa")
 
 # -----------------------------------------------------------------------------
 # IC Imaging Control 4 SDK discovery and validation
 # -----------------------------------------------------------------------------
-# IC4Ext expects this directory layout:
-#   <IC4_SDK_ROOT>/include/ic4/ic4.h
-#   <IC4_SDK_ROOT>/lib/x64/ic4core.lib
-#   <IC4_SDK_ROOT>/bin/x64/ic4core.dll
-#
-# A previous build could continue with an empty IC4_SDK_ROOT and fail later with
-# C1083 at IC4ChunkMetadata.hpp. Resolve and validate the SDK before IC4Ext is
-# configured so the error is reported at CMake configure time instead.
 set(IC4_SDK_ROOT "" CACHE PATH "Path to the IC Imaging Control 4 SDK root")
 
 function(dual_ic4_varjo_normalize_ic4_root candidate out_root)
@@ -34,23 +48,17 @@ function(dual_ic4_varjo_normalize_ic4_root candidate out_root)
         set(${out_root} "" PARENT_SCOPE)
         return()
     endif()
-
     file(TO_CMAKE_PATH "${candidate}" normalized)
     string(REGEX REPLACE "/+$" "" normalized "${normalized}")
-
     if(EXISTS "${normalized}/include/ic4/ic4.h")
         set(${out_root} "${normalized}" PARENT_SCOPE)
         return()
     endif()
-
-    # Also accept the include directory itself, for example:
-    #   -DIC4_SDK_ROOT=C:/.../IC Imaging Control 4/include
     if(EXISTS "${normalized}/ic4/ic4.h")
         get_filename_component(parent "${normalized}" DIRECTORY)
         set(${out_root} "${parent}" PARENT_SCOPE)
         return()
     endif()
-
     set(${out_root} "" PARENT_SCOPE)
 endfunction()
 
@@ -91,23 +99,19 @@ if(NOT _dual_ic4_resolved_sdk_root)
         "IC Imaging Control 4 SDK was not found.\n"
         "Expected: <root>/include/ic4/ic4.h and <root>/lib/x64/ic4core.lib\n"
         "Checked candidates:\n  - ${_dual_ic4_candidate_text}\n"
-        "Configure again with, for example:\n"
-        "  -DIC4_SDK_ROOT=\"C:/Users/<name>/AppData/Local/Programs/The Imaging Source Europe GmbH/IC Imaging Control 4\"")
+        "Configure with -DIC4_SDK_ROOT=<IC Imaging Control 4 root>.")
 endif()
-
 if(NOT EXISTS "${_dual_ic4_resolved_sdk_root}/lib/x64/ic4core.lib")
     message(FATAL_ERROR
         "IC4 headers were found, but ic4core.lib is missing: "
         "${_dual_ic4_resolved_sdk_root}/lib/x64/ic4core.lib")
 endif()
-
 set(IC4_SDK_ROOT "${_dual_ic4_resolved_sdk_root}" CACHE PATH "Path to the IC Imaging Control 4 SDK root" FORCE)
 message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
-message(STATUS "DualIC4VarjoApp: IC4 header   = ${IC4_SDK_ROOT}/include/ic4/ic4.h")
-message(STATUS "DualIC4VarjoApp: IC4 library  = ${IC4_SDK_ROOT}/lib/x64/ic4core.lib")
 
-# VarjoXR v0.1.0 normally pins an older D3D12Helper commit. Override it so
-# VarjoXR and IC4Ext v1.0.1 share the same D3D12Helper target and ABI.
+# -----------------------------------------------------------------------------
+# D3D12 / Varjo / IC4 dependencies
+# -----------------------------------------------------------------------------
 set(VARJOXR_ENABLE_D3D11 OFF CACHE BOOL "" FORCE)
 set(VARJOXR_ENABLE_D3D12 ON CACHE BOOL "" FORCE)
 set(VARJOXR_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
@@ -138,11 +142,36 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(IC4Ext)
 
+# -----------------------------------------------------------------------------
+# Calibration-only dependency. Only the reusable core and OpenCV analyzer are
+# added; MFFrameSource and the standalone Varjo application are intentionally not.
+# OpenCV remains PRIVATE inside VdcaStereoCalibrationOpenCV.
+# -----------------------------------------------------------------------------
+FetchContent_Declare(
+    VdcaCalibrationSource
+    GIT_REPOSITORY https://github.com/Isasa2357/VarjoDualCameraApplications.git
+    GIT_TAG        ${DUAL_IC4_VARJO_CALIBRATION_COMMIT}
+    GIT_SHALLOW    FALSE)
+FetchContent_GetProperties(VdcaCalibrationSource)
+if(NOT vdcacalibrationsource_POPULATED)
+    FetchContent_Populate(VdcaCalibrationSource)
+endif()
+add_subdirectory(
+    "${vdcacalibrationsource_SOURCE_DIR}/libraries/StereoCalibrationCore"
+    "${CMAKE_BINARY_DIR}/_deps/vdca-calibration-core-build"
+    EXCLUDE_FROM_ALL)
+add_subdirectory(
+    "${vdcacalibrationsource_SOURCE_DIR}/libraries/StereoCalibrationOpenCV"
+    "${CMAKE_BINARY_DIR}/_deps/vdca-calibration-opencv-build"
+    EXCLUDE_FROM_ALL)
+
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
     src/RenderedFrameMetadataLogger.cpp
     src/RenderedFrameMetadataLogger.hpp
+    src/StereoCalibrationSupport.cpp
+    src/StereoCalibrationSupport.hpp
     src/StereoDisplayTextureRing.cpp
     src/StereoDisplayTextureRing.hpp
     src/TimeUtil.cpp
@@ -153,13 +182,14 @@ target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
 target_compile_definitions(DualIC4VarjoApp PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(DualIC4VarjoApp PRIVATE
     IC4Ext::IC4Ext
-    VarjoXR::VarjoXR)
+    VarjoXR::VarjoXR
+    Vdca::StereoCalibrationCore
+    Vdca::StereoCalibrationOpenCV)
 
 if(MSVC)
     target_compile_options(DualIC4VarjoApp PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
 
-# VarjoXR exposes these helper functions from its CMake modules.
 if(COMMAND varjoxr_copy_dxc_runtime)
     varjoxr_copy_dxc_runtime(DualIC4VarjoApp)
 endif()
@@ -167,12 +197,9 @@ if(COMMAND varjoxr_copy_varjo_runtime)
     varjoxr_copy_varjo_runtime(DualIC4VarjoApp)
 endif()
 
-# IC4 SDK itself is installed locally and is not fetched by IC4Ext.
 find_file(DUAL_IC4_VARJO_IC4CORE_DLL
     NAMES ic4core.dll
-    PATHS
-        "${IC4_SDK_ROOT}/bin/x64"
-        "${IC4_SDK_ROOT}/bin"
+    PATHS "${IC4_SDK_ROOT}/bin/x64" "${IC4_SDK_ROOT}/bin"
     NO_DEFAULT_PATH)
 if(DUAL_IC4_VARJO_IC4CORE_DLL)
     add_custom_command(TARGET DualIC4VarjoApp POST_BUILD
@@ -181,5 +208,5 @@ if(DUAL_IC4_VARJO_IC4CORE_DLL)
                 "$<TARGET_FILE_DIR:DualIC4VarjoApp>"
         VERBATIM)
 else()
-    message(WARNING "ic4core.dll was not found under IC4_SDK_ROOT. Ensure the IC4 SDK bin/x64 directory is on PATH.")
+    message(WARNING "ic4core.dll was not found under IC4_SDK_ROOT. Ensure its bin/x64 directory is on PATH.")
 endif()
