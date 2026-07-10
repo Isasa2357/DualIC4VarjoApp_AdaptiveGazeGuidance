@@ -100,6 +100,7 @@ void RenderedFrameMetadataLogger::writeHeader()
 {
     writeRecord(
         "render_row_index,render_submit_unix_us,render_submit_local_iso8601,new_frame_from_queue,submit_ok,"
+        "calibration_source,calibration_profile,calibration_revision,"
         "plane_moved,plane_resized,plane_placement_mode,plane_x_m,plane_y_m,plane_z_m,plane_width_m,plane_height_m,"
         "sync_group_id,sync_emitted_unix_us,sync_timestamp_source,sync_timestamp_diff_us,host_received_diff_us,display_slot_index,"
         "left_frame_number,left_device_timestamp_ns,left_host_received_unix_us,left_width,left_height,"
@@ -118,6 +119,9 @@ void RenderedFrameMetadataLogger::writeRow(const RenderedFrameMetadataRow& row)
          << ',' << row.renderSubmitLocalIso8601
          << ',' << (row.newFrameFromQueue ? 1 : 0)
          << ',' << (row.submitOk ? 1 : 0)
+         << ',' << row.calibrationSource
+         << ',' << row.calibrationProfile
+         << ',' << row.calibrationRevision
          << ',' << (row.planeMoved ? 1 : 0)
          << ',' << (row.planeResized ? 1 : 0)
          << ',' << row.planePlacementMode
