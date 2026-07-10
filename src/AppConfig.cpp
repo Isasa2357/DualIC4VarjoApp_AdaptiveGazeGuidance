@@ -8,7 +8,6 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
-#include <stdexcept>
 #include <type_traits>
 
 namespace DualIC4Varjo {
@@ -24,9 +23,9 @@ bool ParseNumber(const std::string& text, T& value)
             if (consumed != text.size()) return false;
             if constexpr (std::is_unsigned_v<T>) {
                 if (parsed < 0 || static_cast<unsigned long long>(parsed) > std::numeric_limits<T>::max()) return false;
-            } else {
-                if (parsed < static_cast<long long>(std::numeric_limits<T>::min()) ||
-                    parsed > static_cast<long long>(std::numeric_limits<T>::max())) return false;
+            } else if (parsed < static_cast<long long>(std::numeric_limits<T>::min()) ||
+                       parsed > static_cast<long long>(std::numeric_limits<T>::max())) {
+                return false;
             }
             value = static_cast<T>(parsed);
         } else {
@@ -53,6 +52,16 @@ bool ParseBool(const std::string& text, bool& value)
     return false;
 }
 
+bool LooksLikeOption(const char* text)
+{
+    return text && text[0] == '-';
+}
+
+bool IsCalibrationProfile(const std::string& value)
+{
+    return value == "uncalibrated" || value == "affine_vertical" || value == "affine_full";
+}
+
 } // namespace
 
 bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error)
@@ -77,6 +86,13 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
         if (option == "--help" || option == "-h") {
             config.showHelp = true;
             return true;
+        }
+        if (option == "--calib") {
+            config.calibration.enabled = true;
+            if (i + 1 < argc && !LooksLikeOption(argv[i + 1])) {
+                config.calibration.jsonPath = std::filesystem::path(argv[++i]);
+            }
+            continue;
         }
 
         const char* raw = requireValue(i, option);
@@ -178,6 +194,23 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
             if (!ParseNumber(value, config.maxRuntimeSeconds)) return invalidValue(option, value);
         } else if (option == "--metadata-csv") {
             config.metadataCsv = value;
+        } else if (option == "--calib-board-cols") {
+            if (!ParseNumber(value, config.calibration.boardColumns)) return invalidValue(option, value);
+        } else if (option == "--calib-board-rows") {
+            if (!ParseNumber(value, config.calibration.boardRows)) return invalidValue(option, value);
+        } else if (option == "--calib-profile") {
+            if (!IsCalibrationProfile(value)) return invalidValue(option, value);
+            config.calibration.profile = value;
+        } else if (option == "--calib-max-observations") {
+            if (!ParseNumber(value, config.calibration.maxObservations)) return invalidValue(option, value);
+        } else if (option == "--calib-min-observations") {
+            if (!ParseNumber(value, config.calibration.minObservations)) return invalidValue(option, value);
+        } else if (option == "--calib-min-corner-motion-px") {
+            if (!ParseNumber(value, config.calibration.minCornerMotionPx)) return invalidValue(option, value);
+        } else if (option == "--calib-ransac-threshold-px") {
+            if (!ParseNumber(value, config.calibration.ransacThresholdPx)) return invalidValue(option, value);
+        } else if (option == "--calib-sb") {
+            if (!ParseBool(value, config.calibration.useChessboardSb)) return invalidValue(option, value);
         } else {
             error = "Unknown option: " + option;
             return false;
@@ -214,9 +247,22 @@ bool ParseArguments(int argc, char** argv, AppConfig& config, std::string& error
         error = "--max-runtime-seconds must be non-negative";
         return false;
     }
-    if (config.metadataCsv.empty()) {
-        config.metadataCsv = MakeDefaultMetadataPath();
+    if (config.calibration.enabled) {
+        if (config.calibration.boardColumns < 2 || config.calibration.boardRows < 2) {
+            error = "Calibration board dimensions must be at least 2 x 2 inner corners";
+            return false;
+        }
+        if (config.calibration.maxObservations == 0 || config.calibration.minObservations == 0 ||
+            config.calibration.minObservations > config.calibration.maxObservations) {
+            error = "Calibration observation counts are invalid";
+            return false;
+        }
+        if (config.calibration.minCornerMotionPx < 0.0 || config.calibration.ransacThresholdPx <= 0.0) {
+            error = "Calibration motion threshold must be non-negative and RANSAC threshold must be positive";
+            return false;
+        }
     }
+    if (config.metadataCsv.empty()) config.metadataCsv = MakeDefaultMetadataPath();
     return true;
 }
 
@@ -224,40 +270,40 @@ void PrintUsage(std::ostream& out)
 {
     out <<
         "DualIC4VarjoApp (D3D12)\n\n"
-        "Required runtime: two IC4 cameras, Varjo Runtime, and a connected Varjo HMD.\n\n"
         "Camera selection:\n"
-        "  --left-device-index N          Default: 0\n"
-        "  --right-device-index N         Default: 1\n"
-        "  --left-serial TEXT             Serial takes precedence over device index\n"
-        "  --right-serial TEXT\n"
-        "  --left-unique-name TEXT\n"
-        "  --right-unique-name TEXT\n"
-        "  --left-json PATH               IC Capture 4 exported state JSON\n"
-        "  --right-json PATH\n"
-        "  --left-json-device-index N     Default: 0\n"
-        "  --right-json-device-index N    Default: 0\n"
+        "  --left-device-index N / --right-device-index N\n"
+        "  --left-serial TEXT / --right-serial TEXT\n"
+        "  --left-json PATH / --right-json PATH\n"
+        "  --left-json-device-index N / --right-json-device-index N\n"
         "  --left-offset-x N / --left-offset-y N\n"
         "  --right-offset-x N / --right-offset-y N\n\n"
         "Capture and synchronization:\n"
-        "  --width N --height N --fps N\n"
-        "  --format BGR8|BGRa8|Mono8|BayerRG8|BayerGR8|BayerGB8|BayerBG8\n"
-        "  --sync-tolerance-ms N          Default: 5.0\n"
-        "  --sync-timestamp host|device|auto   Default: host\n"
-        "  --camera-start-delay-ms N      Default: 2000\n"
-        "  --initial-frame-timeout-ms N   Default: 15000\n\n"
+        "  --width N --height N --fps N --format FORMAT\n"
+        "  --sync-tolerance-ms N\n"
+        "  --sync-timestamp host|device|auto\n"
+        "  --camera-start-delay-ms N\n\n"
+        "Stereo calibration:\n"
+        "  --calib [JSON_PATH]             Existing file: load; missing/no path: run live calibration\n"
+        "  --calib-board-cols N            Default: 12 inner corners\n"
+        "  --calib-board-rows N            Default: 9 inner corners\n"
+        "  --calib-profile NAME            affine_vertical (default), affine_full, uncalibrated\n"
+        "  --calib-max-observations N      Default: 30\n"
+        "  --calib-min-observations N      Default: 8\n"
+        "  --calib-min-corner-motion-px N Default: 15\n"
+        "  --calib-ransac-threshold-px N  Default: 1.5\n"
+        "  --calib-sb 0|1                  Use slower chessboard SB detector\n\n"
         "Plane:\n"
-        "  --placement head|world         Default: head\n"
-        "  --plane-width-m N              Default: 1.0\n"
-        "  --plane-height-m N             0 computes from the camera aspect ratio\n"
-        "  --plane-x-m N --plane-y-m N\n"
-        "  --plane-distance-m N           Default: 1.0\n\n"
+        "  --placement head|world\n"
+        "  --plane-width-m N --plane-height-m N\n"
+        "  --plane-x-m N --plane-y-m N --plane-distance-m N\n\n"
         "Logging and execution:\n"
-        "  --metadata-csv PATH            Default: logs/rendered_frames_<time>.csv\n"
-        "  --display-ring-size N          Default: 4, minimum: 3\n"
-        "  --d3d12-debug 0|1              Default: 1\n"
-        "  --max-runtime-seconds N        0 means unlimited\n"
+        "  --metadata-csv PATH\n"
+        "  --display-ring-size N\n"
+        "  --d3d12-debug 0|1\n"
+        "  --max-runtime-seconds N\n"
         "  --help\n\n"
-        "Press Esc or Ctrl+C to stop.\n";
+        "During live calibration, press q after a valid estimate is available.\n"
+        "During the experiment, use arrow keys for Plane movement and Shift+Left/Right for resizing.\n";
 }
 
 IC4Ext::CameraCaptureConfig MakeCaptureConfig(const AppConfig& app, const CameraAppConfig& camera)
@@ -268,7 +314,6 @@ IC4Ext::CameraCaptureConfig MakeCaptureConfig(const AppConfig& app, const Camera
         config.ic4StateJson.deviceIndex = camera.stateJsonDeviceIndex;
         config.ic4StateJson.strict = false;
     }
-
     if (camera.stateJson.empty() || app.formatExplicit) {
         config.streamRequest.requestedFormat = app.inputFormat;
         config.streamRequest.forceRequestedFormat = true;
@@ -278,7 +323,6 @@ IC4Ext::CameraCaptureConfig MakeCaptureConfig(const AppConfig& app, const Camera
     if (app.fps > 0.0) config.streamRequest.fps = app.fps;
     config.streamRequest.offsetX = camera.offsetX;
     config.streamRequest.offsetY = camera.offsetY;
-
     config.outputSpec.outputFormat = IC4Ext::GpuFrameFormat::RGBA8;
     config.outputSpec.createSrv = false;
     config.outputSpec.createUav = false;
@@ -293,7 +337,6 @@ std::filesystem::path MakeDefaultMetadataPath()
     const std::time_t timeValue = std::chrono::system_clock::to_time_t(now);
     std::tm local{};
     localtime_s(&local, &timeValue);
-
     std::ostringstream name;
     name << "rendered_frames_" << std::put_time(&local, "%Y%m%d_%H%M%S") << ".csv";
     return std::filesystem::path("logs") / name.str();
