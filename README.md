@@ -6,12 +6,12 @@ IC4Extで2台のIC4カメラをD3D12テクスチャとして取得し、`D3D12Fr
 
 - IC4Ext: `v1.0.1`
 - VarjoXR: `v0.1.0`
-- D3D12Helper: `v1.12.1`
+- D3D12Helper: `v1.13.0`
 - VarjoDualCameraApplicationsのキャリブレーション実装: commit `8470b8e34b0bdd50546cd2215c8969b0512c3eaa`
 - nlohmann/json: IC4Extが提供する`nlohmann_json::nlohmann_json`を共有
 - OpenCV: vcpkgの`x64-windows`パッケージ。キャリブレーション解析ターゲットだけで使用
 
-OpenCV型は通常表示コード、CSV、JSONモデル、Plane表示APIには露出しません。OpenCVを使うのはD3D12 readback後のチェッカーボード検出と視差推定だけです。
+D3D12Helper v1.13.0には、キャリブレーション用readbackが使用する`D3D12ReadbackBuffer::MapRead(offset, size)`が含まれます。OpenCV型は通常表示コード、CSV、JSONモデル、Plane表示APIには露出しません。OpenCVを使うのはD3D12 readback後のチェッカーボード検出と視差推定だけです。
 
 ## 処理構成
 
@@ -43,7 +43,7 @@ vcpkgはPATH上の`vcpkg.exe`または環境変数`VCPKG_ROOT`から自動検出
 
 ## ビルド（CMD）
 
-キャリブレーション依存とtoolchainが追加されたため、以前のビルドディレクトリは削除してください。
+D3D12Helperの固定バージョンを変更した場合、既存の`_deps/d3d12helper-src`が再利用されないよう、ビルドディレクトリ全体を削除してください。
 
 ```bat
 set "IC4_SDK_ROOT=%LOCALAPPDATA%\Programs\The Imaging Source Europe GmbH\IC Imaging Control 4"
