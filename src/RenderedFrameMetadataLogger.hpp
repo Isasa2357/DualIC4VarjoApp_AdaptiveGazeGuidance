@@ -16,31 +16,29 @@ namespace DualIC4Varjo {
 struct CameraFrameMetadataRow {
     std::uint64_t frameNumber = 0;
     std::uint64_t deviceTimestampNs = 0;
-    std::int64_t hostReceivedSteadyUs = 0;
     std::int64_t hostReceivedUnixUs = 0;
-    std::string hostReceivedLocalIso8601;
     int width = 0;
     int height = 0;
-    int dxgiFormat = 0;
-    IC4Ext::FrameChunkMetadata chunk;
 };
 
 struct RenderedFrameMetadataRow {
     std::uint64_t renderRowIndex = 0;
     std::int64_t renderSubmitUnixUs = 0;
     std::string renderSubmitLocalIso8601;
-    std::int64_t renderSubmitSteadyUs = 0;
     bool newFrameFromQueue = false;
     bool submitOk = false;
 
+    bool planeMoved = false;
+    std::string planePlacementMode;
+    float planeX = 0.0f;
+    float planeY = 0.0f;
+    float planeZ = 0.0f;
+
     std::uint64_t syncGroupId = 0;
-    std::int64_t syncEmittedSteadyUs = 0;
     std::int64_t syncEmittedUnixUs = 0;
     std::string syncTimestampSource;
     std::int64_t syncTimestampDiffNs = 0;
-    double syncTimestampDiffMs = 0.0;
     std::int64_t hostReceivedDiffUs = 0;
-    double hostReceivedDiffMs = 0.0;
 
     CameraFrameMetadataRow left;
     CameraFrameMetadataRow right;
@@ -71,6 +69,7 @@ private:
     void workerLoop();
     void writeHeader();
     void writeRow(const RenderedFrameMetadataRow& row);
+    void writeRecord(const std::string& record);
     void setError(std::string message);
 
     std::filesystem::path path_;
