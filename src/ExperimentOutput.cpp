@@ -1,5 +1,6 @@
 #include "ExperimentOutput.hpp"
 
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <system_error>
