@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.17.0
+    VERSION 0.18.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -196,6 +196,8 @@ add_executable(DualIC4VarjoApp
     src/ExperimentOutput.hpp
     src/EyeTrackerLoadServiceHook.cpp
     src/EyeTrackerLoadServiceHook.hpp
+    src/GazeOnCameraFrameService.cpp
+    src/GazeOnCameraFrameService.hpp
     src/ImGuiStereoPreview.cpp
     src/ImGuiStereoPreview.hpp
     src/ImuLoadServiceHook.cpp
