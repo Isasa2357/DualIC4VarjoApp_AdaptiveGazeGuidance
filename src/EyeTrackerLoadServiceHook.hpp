@@ -5,11 +5,13 @@
 #include "StereoDisplayTextureRing.hpp"
 
 #include <VarjoToolkit/Core/VarjoFrameInfo.hpp>
+#include <VarjoToolkit/Services/EyeTracking/VarjoEyeTrackingService.hpp>
 
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <Varjo.h>
 
@@ -22,6 +24,10 @@ public:
     static void submit(
         const VarjoFrameInfoSnapshot& snapshot,
         const std::shared_ptr<varjo_Session>& session) noexcept;
+
+    // Called by the application integration layer. EyeTrackerService remains
+    // responsible only for acquisition and its own CSV; projection is external.
+    static std::vector<VarjoEyeTrackingData> requestData();
 
     static void stop() noexcept;
 
