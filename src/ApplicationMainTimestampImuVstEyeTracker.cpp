@@ -1,15 +1,19 @@
 #include "ExperimentOutput.hpp"
 #include "EyeTrackerLoadServiceHook.hpp"
+#include "GazeOnCameraFrameService.hpp"
 #include "ImuLoadServiceHook.hpp"
 #include "KeyInputService.hpp"
 #include "TimestampLoadService.hpp"
 #include "VstLoadServiceHook.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 
 namespace DualIC4Varjo {
 namespace {
@@ -40,21 +44,16 @@ ExperimentOutputLayout ReserveOutputFromArguments(int argc, char** argv)
 {
     const auto directory = FindArgumentValue(argc, argv, "--dir");
     const auto project = FindArgumentValue(argc, argv, "--project");
-    const auto metadata = FindArgumentValue(argc, argv, "--metadata-csv");
-
-    if (!directory.has_value() || directory->empty()) {
+    if (!directory || directory->empty()) {
         throw std::invalid_argument("--dir is required and must not be empty");
     }
-    if (!project.has_value() || project->empty()) {
+    if (!project || project->empty()) {
         throw std::invalid_argument("--project is required and must not be empty");
     }
-
     return ReserveExperimentOutputLayout(
         std::filesystem::path(*directory),
         *project,
-        metadata.has_value()
-            ? std::filesystem::path(*metadata)
-            : std::filesystem::path("rendered_frames.csv"));
+        std::filesystem::path("rendered_frames.csv"));
 }
 
 bool ValidateOutputFile(
@@ -63,36 +62,33 @@ bool ValidateOutputFile(
 {
     std::error_code error;
     if (!std::filesystem::is_regular_file(path, error) || error) {
-        std::cerr
-            << "[OUTPUT] missing " << label << ": " << path.string();
+        std::cerr << "[OUTPUT] missing " << label << ": " << path.string();
         if (error) std::cerr << " (" << error.message() << ')';
         std::cerr << '\n';
         return false;
     }
-
     error.clear();
     const auto size = std::filesystem::file_size(path, error);
     if (error || size == 0) {
-        std::cerr
-            << "[OUTPUT] empty/unreadable " << label << ": "
-            << path.string();
+        std::cerr << "[OUTPUT] empty/unreadable " << label << ": "
+                  << path.string();
         if (error) std::cerr << " (" << error.message() << ')';
         std::cerr << '\n';
         return false;
     }
-
-    std::cout
-        << "[OUTPUT] verified " << label << ": "
-        << size << " bytes, " << path.string() << '\n';
+    std::cout << "[OUTPUT] verified " << label << ": "
+              << size << " bytes, " << path.string() << '\n';
     return true;
 }
 
 void SubmitFrameInfoServices(
     const VarjoFrameInfoSnapshot& snapshot,
-    const std::shared_ptr<varjo_Session>& session) noexcept
+    const std::shared_ptr<varjo_Session>& session,
+    const GazeCameraPlaneSnapshot& plane)
 {
     ImuLoadServiceHook::submit(snapshot, session);
     EyeTrackerLoadServiceHook::submit(snapshot, session);
+    GazeOnCameraFrameHook::submitFrameInfo(snapshot, plane, session);
 }
 
 } // namespace
@@ -108,11 +104,26 @@ void SubmitFrameInfoServices(
 #define main DualIC4VarjoBaseMain
 #define markRendered(...)                                                     \
     markRendered(__VA_ARGS__),                                                \
-        DualIC4Varjo::SubmitFrameInfoServices(                                \
-            d3dBackend.frameInfoSnapshot(),                                   \
-            session->shared()),                                               \
-        DualIC4Varjo::VstLoadServiceHook::ensureStarted(                      \
-            session->shared())
+        [&]() {                                                               \
+            const auto gazeFrameSnapshot = d3dBackend.frameInfoSnapshot();    \
+            const auto gazePlaneSize = plane.size();                          \
+            const auto& gazePlanePosition = plane.transform().position;       \
+            DualIC4Varjo::GazeCameraPlaneSnapshot gazePlaneSnapshot{};        \
+            gazePlaneSnapshot.x = gazePlanePosition.x;                        \
+            gazePlaneSnapshot.y = gazePlanePosition.y;                        \
+            gazePlaneSnapshot.z = gazePlanePosition.z;                        \
+            gazePlaneSnapshot.width = gazePlaneSize.x;                        \
+            gazePlaneSnapshot.height = gazePlaneSize.y;                       \
+            gazePlaneSnapshot.leftFrameWidth = inputWidth;                    \
+            gazePlaneSnapshot.leftFrameHeight = inputHeight;                  \
+            gazePlaneSnapshot.rightFrameWidth = inputWidth;                   \
+            gazePlaneSnapshot.rightFrameHeight = inputHeight;                 \
+            gazePlaneSnapshot.placementMode = config.placementMode;           \
+            DualIC4Varjo::SubmitFrameInfoServices(                            \
+                gazeFrameSnapshot, session->shared(), gazePlaneSnapshot);     \
+            DualIC4Varjo::VstLoadServiceHook::ensureStarted(                  \
+                session->shared());                                           \
+        }()
 #include "ApplicationMainPlaneControl.cpp"
 #undef markRendered
 #undef main
@@ -135,6 +146,15 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    const auto calibrationArgument =
+        DualIC4Varjo::FindArgumentValue(argc, argv, "--calib");
+    const std::optional<std::filesystem::path> calibrationPath =
+        calibrationArgument
+            ? std::optional<std::filesystem::path>(*calibrationArgument)
+            : std::nullopt;
+    const auto gazeCameraPath = outputLayout.directory /
+        (outputLayout.resolvedProjectName + "_gaze_on_camera_frame.csv");
+
     std::cout
         << "[OUTPUT] requested project : "
         << outputLayout.requestedProjectName << '\n'
@@ -146,6 +166,13 @@ int main(int argc, char** argv)
     DualIC4Varjo::ImuLoadServiceHook::configure(argc, argv);
     DualIC4Varjo::VstLoadServiceHook::configure(argc, argv);
     DualIC4Varjo::EyeTrackerLoadServiceHook::configure(argc, argv);
+    if (!DualIC4Varjo::GazeOnCameraFrameHook::configure(
+            gazeCameraPath, calibrationPath)) {
+        std::cerr
+            << "Gaze-on-camera-frame service failed to start: "
+            << DualIC4Varjo::GazeOnCameraFrameHook::lastError() << '\n';
+        return 1;
+    }
 
     DualIC4Varjo::KeyInputService keyInputService(
         outputLayout.directory /
@@ -154,6 +181,7 @@ int main(int argc, char** argv)
         std::cerr
             << "Key input service failed to start: "
             << keyInputService.lastError() << '\n';
+        DualIC4Varjo::GazeOnCameraFrameHook::stop();
         return 1;
     }
 
@@ -163,23 +191,44 @@ int main(int argc, char** argv)
             << "Timestamp service failed to start: "
             << timestampService.lastError() << '\n';
         keyInputService.stop();
+        DualIC4Varjo::GazeOnCameraFrameHook::stop();
         return 1;
     }
+
+    std::atomic<bool> gazeBridgeStop{false};
+    std::thread gazeBridge([&]() {
+        while (!gazeBridgeStop.load(std::memory_order_acquire)) {
+            auto data = DualIC4Varjo::EyeTrackerLoadServiceHook::requestData();
+            if (!data.empty()) {
+                DualIC4Varjo::GazeOnCameraFrameHook::submitGazeData(
+                    std::move(data));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        auto remaining = DualIC4Varjo::EyeTrackerLoadServiceHook::requestData();
+        if (!remaining.empty()) {
+            DualIC4Varjo::GazeOnCameraFrameHook::submitGazeData(
+                std::move(remaining));
+        }
+    });
 
     int result = 1;
     try {
         result = DualIC4VarjoBaseMain(argc, argv);
     } catch (const std::exception& exception) {
-        std::cerr
-            << "Unhandled application exception: "
-            << exception.what() << '\n';
+        std::cerr << "Unhandled application exception: "
+                  << exception.what() << '\n';
         result = 1;
     } catch (...) {
         std::cerr << "Unhandled unknown application exception.\n";
         result = 1;
     }
 
+    gazeBridgeStop.store(true, std::memory_order_release);
+    if (gazeBridge.joinable()) gazeBridge.join();
+
     DualIC4Varjo::EyeTrackerLoadServiceHook::stop();
+    DualIC4Varjo::GazeOnCameraFrameHook::stop();
     DualIC4Varjo::VstLoadServiceHook::stop();
     DualIC4Varjo::ImuLoadServiceHook::stop();
     timestampService.stop();
@@ -189,7 +238,6 @@ int main(int argc, char** argv)
         << "[TIMESTAMP] samples=" << timestampService.sampleCount()
         << " failed=" << timestampService.failedSampleCount()
         << " CSV=" << timestampService.outputPath().string() << '\n';
-
     std::cout
         << "[IMU] received=" << DualIC4Varjo::ImuLoadServiceHook::receivedCount()
         << " processed=" << DualIC4Varjo::ImuLoadServiceHook::processedCount()
@@ -197,7 +245,6 @@ int main(int argc, char** argv)
         << " dropped=" << DualIC4Varjo::ImuLoadServiceHook::droppedCount()
         << " CSV=" << DualIC4Varjo::ImuLoadServiceHook::outputPath().string()
         << '\n';
-
     std::cout
         << "[VST] leftReceived=" << DualIC4Varjo::VstLoadServiceHook::leftReceivedCount()
         << " rightReceived=" << DualIC4Varjo::VstLoadServiceHook::rightReceivedCount()
@@ -207,7 +254,6 @@ int main(int argc, char** argv)
         << " writeFailures=" << DualIC4Varjo::VstLoadServiceHook::writeFailureCount()
         << " output=" << DualIC4Varjo::VstLoadServiceHook::outputDirectory().string()
         << '\n';
-
     std::cout
         << "[EYETRACKER] received="
         << DualIC4Varjo::EyeTrackerLoadServiceHook::receivedSampleCount()
@@ -224,7 +270,20 @@ int main(int argc, char** argv)
         << " CSV="
         << DualIC4Varjo::EyeTrackerLoadServiceHook::outputPath().string()
         << '\n';
-
+    std::cout
+        << "[GAZE_CAMERA] received="
+        << DualIC4Varjo::GazeOnCameraFrameHook::receivedGazeCount()
+        << " written="
+        << DualIC4Varjo::GazeOnCameraFrameHook::writtenRowCount()
+        << " dropped="
+        << DualIC4Varjo::GazeOnCameraFrameHook::droppedGazeCount()
+        << " submittedFrames="
+        << DualIC4Varjo::GazeOnCameraFrameHook::submittedFrameCount()
+        << " evictedFrames="
+        << DualIC4Varjo::GazeOnCameraFrameHook::evictedFrameCount()
+        << " CSV="
+        << DualIC4Varjo::GazeOnCameraFrameHook::outputPath().string()
+        << '\n';
     std::cout
         << "[KEYINPUT] events=" << keyInputService.eventCount()
         << " CSV=" << keyInputService.outputPath().string() << '\n';
@@ -232,17 +291,17 @@ int main(int argc, char** argv)
     const std::string imuError = DualIC4Varjo::ImuLoadServiceHook::lastError();
     const std::string vstError = DualIC4Varjo::VstLoadServiceHook::lastError();
     const std::string eyeError = DualIC4Varjo::EyeTrackerLoadServiceHook::lastError();
+    const std::string gazeError = DualIC4Varjo::GazeOnCameraFrameHook::lastError();
     const std::string keyError = keyInputService.lastError();
     if (!imuError.empty()) std::cerr << "[IMU] last error: " << imuError << '\n';
     if (!vstError.empty()) std::cerr << "[VST] last error: " << vstError << '\n';
     if (!eyeError.empty()) std::cerr << "[EYETRACKER] last error: " << eyeError << '\n';
+    if (!gazeError.empty()) std::cerr << "[GAZE_CAMERA] last error: " << gazeError << '\n';
     if (!keyError.empty()) std::cerr << "[KEYINPUT] last error: " << keyError << '\n';
 
-    const auto vstLeftMetadata =
-        outputLayout.directory /
+    const auto vstLeftMetadata = outputLayout.directory /
         (outputLayout.resolvedProjectName + "_vst_left_metadata.csv");
-    const auto vstRightMetadata =
-        outputLayout.directory /
+    const auto vstRightMetadata = outputLayout.directory /
         (outputLayout.resolvedProjectName + "_vst_right_metadata.csv");
 
     bool requiredOutputsValid = true;
@@ -254,6 +313,9 @@ int main(int argc, char** argv)
         "IMU CSV", DualIC4Varjo::ImuLoadServiceHook::outputPath());
     requiredOutputsValid &= DualIC4Varjo::ValidateOutputFile(
         "key input CSV", keyInputService.outputPath());
+    requiredOutputsValid &= DualIC4Varjo::ValidateOutputFile(
+        "gaze-on-camera-frame CSV",
+        DualIC4Varjo::GazeOnCameraFrameHook::outputPath());
     requiredOutputsValid &= DualIC4Varjo::ValidateOutputFile(
         "VST left metadata CSV", vstLeftMetadata);
     requiredOutputsValid &= DualIC4Varjo::ValidateOutputFile(
