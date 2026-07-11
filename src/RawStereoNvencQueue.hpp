@@ -9,7 +9,7 @@ namespace IC4Ext {
 
 // Capacity-1 synchronized queues were sufficient for latest-frame preview and
 // discard. Raw recording needs burst tolerance, so only capacity-1 queues are
-// expanded. Other explicitly configured capacities are preserved.
+// expanded to 16 pairs. Other explicitly configured capacities are preserved.
 class RecordingD3D12SyncedFrameQueue final
     : public D3D12SyncedFrameQueue {
 public:
@@ -19,7 +19,7 @@ public:
     }
 
     explicit RecordingD3D12SyncedFrameQueue(std::size_t maxSize)
-        : D3D12SyncedFrameQueue(maxSize == 1 ? 32 : maxSize)
+        : D3D12SyncedFrameQueue(maxSize == 1 ? 16 : maxSize)
     {
     }
 
@@ -33,7 +33,7 @@ private:
     static ThreadKit::Queues::QueueOptions adjust(
         ThreadKit::Queues::QueueOptions options)
     {
-        if (options.maxSize == 1) options.maxSize = 32;
+        if (options.maxSize == 1) options.maxSize = 16;
         return options;
     }
 };
