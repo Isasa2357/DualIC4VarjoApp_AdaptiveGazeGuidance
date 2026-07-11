@@ -3,16 +3,27 @@
 #include "TimestampLoadService.hpp"
 #include "VstLoadServiceHook.hpp"
 
+namespace DualIC4Varjo {
+namespace {
+
+void SubmitFrameInfoServices(
+    const VarjoFrameInfoSnapshot& snapshot,
+    const std::shared_ptr<varjo_Session>& session) noexcept
+{
+    ImuLoadServiceHook::submit(snapshot, session);
+    EyeTrackerLoadServiceHook::submit(snapshot, session);
+}
+
+} // namespace
+} // namespace DualIC4Varjo
+
 #define main DualIC4VarjoBaseMain
 #define markRendered(...)                                                     \
     markRendered(__VA_ARGS__),                                                \
-        DualIC4Varjo::ImuLoadServiceHook::submit(                             \
+        DualIC4Varjo::SubmitFrameInfoServices(                                \
             d3dBackend.frameInfoSnapshot(),                                   \
             session->shared()),                                               \
         DualIC4Varjo::VstLoadServiceHook::ensureStarted(                      \
-            session->shared()),                                               \
-        DualIC4Varjo::EyeTrackerLoadServiceHook::submit(                      \
-            d3dBackend.frameInfoSnapshot(),                                   \
             session->shared())
 #include "ApplicationMainPlaneControl.cpp"
 #undef markRendered
