@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 namespace DualIC4Varjo {
