@@ -23,7 +23,7 @@ endif()
 set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg target triplet")
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.5.0
+    VERSION 0.5.1
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -111,9 +111,10 @@ set(IC4_SDK_ROOT "${_dual_ic4_resolved_sdk_root}" CACHE PATH "Path to the IC Ima
 message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
 
 # -----------------------------------------------------------------------------
-# Resolve the external-frame VarjoToolkit before VarjoXR so both targets use the
-# same implementation. VarjoXR 0.3.0 owns the dedicated render thread and the
-# FrameInfo / HLSL-constant double buffers.
+# Resolve VarjoToolkit before VarjoXR so both targets use the same Varjo session
+# implementation. VarjoXR 0.3.0 owns the dedicated render thread and the
+# FrameInfo / HLSL-constant double buffers. Application service logging is not
+# built in this revision.
 # -----------------------------------------------------------------------------
 if(VARJOXR_VARJO_SDK_ROOT)
     set(VARJO_SDK_ROOT "${VARJOXR_VARJO_SDK_ROOT}" CACHE PATH "Path to Varjo Native SDK" FORCE)
@@ -198,8 +199,6 @@ add_executable(DualIC4VarjoApp
     src/StereoDisplayTextureRing.hpp
     src/TimeUtil.cpp
     src/TimeUtil.hpp
-    src/VarjoServiceLogging.cpp
-    src/VarjoServiceLogging.hpp
     src/main.cpp)
 
 target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
