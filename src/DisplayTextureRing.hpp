@@ -6,9 +6,11 @@
 #include <D3D12Helper/D3D12Core/D3D12CommandContext.hpp>
 #include <D3D12Helper/D3D12Framework/D3D12Resource.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 #include <wrl/client.h>
 
