@@ -148,7 +148,8 @@ int main(int argc, char** argv)
     DualIC4Varjo::EyeTrackerLoadServiceHook::configure(argc, argv);
 
     DualIC4Varjo::KeyInputService keyInputService(
-        outputLayout.directory / "key_input.csv");
+        outputLayout.directory /
+        (outputLayout.resolvedProjectName + "_key_input.csv"));
     if (!keyInputService.start()) {
         std::cerr
             << "Key input service failed to start: "
