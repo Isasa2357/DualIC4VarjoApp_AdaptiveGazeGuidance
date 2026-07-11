@@ -47,8 +47,9 @@ struct AppConfig {
     float planeY = 0.0f;
     float planeDistanceMeters = 1.0f;
     VarjoXR::PlacementMode placementMode = VarjoXR::PlacementMode::HeadRelative;
-
     std::size_t displayRingSize = 4;
+
+    std::optional<std::filesystem::path> calibrationJson;
 
     bool pcPreviewEnabled = true;
     int pcPreviewWidth = 1600;
