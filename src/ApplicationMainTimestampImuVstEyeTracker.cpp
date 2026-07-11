@@ -119,7 +119,7 @@ int main(int argc, char** argv)
         << DualIC4Varjo::EyeTrackerLoadServiceHook::droppedSampleCount()
         << " submittedFrameInfo="
         << DualIC4Varjo::EyeTrackerLoadServiceHook::submittedFrameInfoCount()
-        << " droppedFrameInfo="
+        << " evictedFrameInfoHistory="
         << DualIC4Varjo::EyeTrackerLoadServiceHook::droppedFrameInfoCount()
         << " CSV="
         << DualIC4Varjo::EyeTrackerLoadServiceHook::outputPath().string()
