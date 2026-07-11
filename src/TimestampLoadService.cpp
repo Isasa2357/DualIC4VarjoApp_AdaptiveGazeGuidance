@@ -1,4 +1,5 @@
 #include "TimestampLoadService.hpp"
+#include "ExperimentOutput.hpp"
 
 #include <VarjoToolkit/Core/VarjoSession.hpp>
 #include <VarjoToolkit/Utilities/VarjoTimestampMapping.hpp>
@@ -6,9 +7,7 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
-#include <iomanip>
 #include <iostream>
-#include <sstream>
 #include <string>
 
 namespace DualIC4Varjo {
@@ -47,6 +46,10 @@ std::string SanitizeFilename(std::string value)
 
 std::filesystem::path ResolveOutputPath(int argc, char** argv)
 {
+    if (const auto active = ActiveExperimentOutputLayout()) {
+        return active->directory / "timestamp_mapping.csv";
+    }
+
     const std::filesystem::path baseDirectory =
         FindArgumentValue(argc, argv, "--dir", "logs");
     const std::string project = SanitizeFilename(
