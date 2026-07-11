@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace DualIC4Varjo {
@@ -20,6 +21,8 @@ std::wstring gBaseFilename;
 std::string gLastError;
 std::unique_ptr<VarjoVSTService> gService;
 std::atomic<VarjoVSTService*> gServiceRaw{nullptr};
+std::thread gStartThread;
+std::atomic<bool> gStartRequested{false};
 std::atomic<std::uint64_t> gFinalLeftReceived{0};
 std::atomic<std::uint64_t> gFinalRightReceived{0};
 std::atomic<std::uint64_t> gFinalLeftProcessed{0};
@@ -61,22 +64,18 @@ std::wstring WidenAscii(const std::string& value)
     return std::wstring(value.begin(), value.end());
 }
 
-bool StartService(
-    const std::shared_ptr<varjo_Session>& session) noexcept
+void StartService(
+    std::shared_ptr<varjo_Session> session) noexcept
 {
-    if (gServiceRaw.load(std::memory_order_acquire)) {
-        return true;
-    }
-
     try {
         std::lock_guard<std::mutex> lock(gStateMutex);
-        if (gService) {
-            gServiceRaw.store(gService.get(), std::memory_order_release);
-            return true;
-        }
         if (!session) {
             gLastError = "renderer Varjo session is null";
-            return false;
+            return;
+        }
+        if (gService) {
+            gServiceRaw.store(gService.get(), std::memory_order_release);
+            return;
         }
 
         gService = std::make_unique<VarjoVSTService>(
@@ -88,30 +87,26 @@ bool StartService(
             const std::wstring error = gService->lastError();
             gLastError.assign(error.begin(), error.end());
             gService.reset();
-            return false;
+            return;
         }
 
         gServiceRaw.store(gService.get(), std::memory_order_release);
-        const auto paths = gService->paths();
         std::cout
             << "[VST] service started with CPU NV12 left/right capture\n"
             << "[VST] output directory: "
             << gOutputDirectory.string()
             << '\n'
             << "[VST] ffmpeg must be available on PATH\n";
-        return true;
     } catch (const std::exception& exception) {
         std::lock_guard<std::mutex> lock(gStateMutex);
         gLastError = exception.what();
         gService.reset();
         gServiceRaw.store(nullptr, std::memory_order_release);
-        return false;
     } catch (...) {
         std::lock_guard<std::mutex> lock(gStateMutex);
         gLastError = "unknown VST service initialization failure";
         gService.reset();
         gServiceRaw.store(nullptr, std::memory_order_release);
-        return false;
     }
 }
 
@@ -133,6 +128,7 @@ void VstLoadServiceHook::configure(int argc, char** argv)
         (project + "_vst");
     gBaseFilename = WidenAscii(project);
     gLastError.clear();
+    gStartRequested.store(false, std::memory_order_release);
     gFinalLeftReceived.store(0, std::memory_order_release);
     gFinalRightReceived.store(0, std::memory_order_release);
     gFinalLeftProcessed.store(0, std::memory_order_release);
@@ -144,11 +140,42 @@ void VstLoadServiceHook::configure(int argc, char** argv)
 void VstLoadServiceHook::ensureStarted(
     const std::shared_ptr<varjo_Session>& session) noexcept
 {
-    static_cast<void>(StartService(session));
+    if (gServiceRaw.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    bool expected = false;
+    if (!gStartRequested.compare_exchange_strong(
+            expected,
+            true,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+        return;
+    }
+
+    try {
+        gStartThread = std::thread(
+            [session] {
+                StartService(session);
+            });
+    } catch (const std::exception& exception) {
+        std::lock_guard<std::mutex> lock(gStateMutex);
+        gLastError = exception.what();
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(gStateMutex);
+        gLastError = "failed to create VST initialization thread";
+    }
 }
 
 void VstLoadServiceHook::stop() noexcept
 {
+    if (gStartThread.joinable()) {
+        try {
+            gStartThread.join();
+        } catch (...) {
+        }
+    }
+
     gServiceRaw.store(nullptr, std::memory_order_release);
 
     std::unique_ptr<VarjoVSTService> service;
