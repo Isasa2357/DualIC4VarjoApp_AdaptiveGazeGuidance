@@ -23,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -293,6 +294,32 @@ DualIC4Varjo::RenderedFrameMetadataRow BuildRenderedFrameMetadata(
     return row;
 }
 
+VarjoXR::XRSpaceAsyncRenderState CapturePlaneProcessingConstants(
+    VarjoXR::XRPlane& plane,
+    std::uint64_t revision,
+    std::size_t planeIndex)
+{
+    VarjoXR::XRSpaceAsyncRenderState state;
+    state.revision = revision;
+
+    for (const VarjoXR::Eye eye : {VarjoXR::Eye::Left, VarjoXR::Eye::Right}) {
+        auto& processing = plane.material(eye).processing;
+        if (!processing.enabled) continue;
+
+        // Asynchronous constant changes must trigger compute processing even
+        // when the camera texture object has not changed in the current frame.
+        processing.timing = VarjoXR::ProcessingTiming::BeforeRenderEachFrame;
+
+        VarjoXR::XRPlaneProcessingConstantsUpdate update;
+        update.planeIndex = planeIndex;
+        update.eye = eye;
+        update.data = processing.userConstants.data;
+        state.processingConstants.push_back(std::move(update));
+    }
+
+    return state;
+}
+
 void PrintError(const char* label, const IC4Ext::ErrorInfo& error)
 {
     std::cerr << label << " failed: " << error.where << ": " << error.message << '\n';
@@ -340,10 +367,11 @@ int main(int argc, char** argv)
 
     std::cout << "DualIC4VarjoApp\n"
               << "  IC4Ext: v1.0.1\n"
-              << "  VarjoXR: v0.2.0 external-frame snapshot\n"
+              << "  VarjoXR: v0.3.0 asynchronous XRSpace rendering\n"
               << "  VarjoToolkit: v0.5.0 external-frame services\n"
               << "  D3D12Helper: v1.13.0\n"
               << "  Backend: D3D12\n"
+              << "  Main thread id: " << GetCurrentThreadId() << '\n'
               << "  Calibration: "
               << (config.calibration.enabled
                       ? (runLiveCalibration ? "live" : "JSON")
@@ -683,6 +711,13 @@ int main(int argc, char** argv)
             activeCalibration.revision = finalSnapshot->revision;
         }
 
+        // Publish the current HLSL constants as an atomic left/right batch. New
+        // time-varying states can be published from the main loop later without
+        // touching Plane state directly.
+        std::uint64_t hlslStateRevision = 1;
+        space.publishAsyncRenderState(
+            CapturePlaneProcessingConstants(plane, hlslStateRevision, 0));
+
         const auto experimentOutput =
             DualIC4Varjo::CreateExperimentOutputLayout(
                 config.outputBaseDirectory,
@@ -711,8 +746,10 @@ int main(int argc, char** argv)
 
         std::cout
             << "Experiment rendering and Varjo service logging started.\n"
+            << "  Render owner        : dedicated XRSpace render thread\n"
             << "  Frame sync owner    : VarjoXR rendering backend only\n"
-            << "  Eye/IMU FrameInfo   : XRSpace snapshot after each successful update\n"
+            << "  Eye/IMU FrameInfo   : main polls XRSpace double buffer\n"
+            << "  HLSL constants      : main -> render double buffer\n"
             << "  Arrow Left/Right : move Plane left/right by 0.01 m\n"
             << "  Arrow Up/Down    : move Plane up/down by 0.01 m\n"
             << "  Shift + Up       : move Plane farther by 0.01 m\n"
@@ -724,21 +761,22 @@ int main(int argc, char** argv)
         const auto runStart = std::chrono::steady_clock::now();
         std::uint64_t renderRowIndex = 0;
         bool firstRender = true;
+        bool newFrameFromQueue = true;
+        bool renderThreadIdLogged = false;
+        PlaneKeyboardUpdate planeUpdate;
+        std::int64_t renderSubmitUnixUs = 0;
         ArrowKeyEdgeTracker planeKeys;
 
-        while (!gStopRequested.load()) {
-            if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) {
-                gStopRequested.store(true);
-                break;
-            }
-            if (config.maxRuntimeSeconds > 0.0 &&
-                std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - runStart).count() >=
-                    config.maxRuntimeSeconds) {
-                break;
+        VarjoXR::XRSpaceRenderThreadDesc renderThreadDesc;
+        renderThreadDesc.useHighThreadPriority = true;
+        renderThreadDesc.beforeFrame = [&](VarjoXR::XRSpace& renderSpace) {
+            if (!renderThreadIdLogged) {
+                std::cout << "[THREAD] XR render thread id="
+                          << GetCurrentThreadId() << '\n';
+                renderThreadIdLogged = true;
             }
 
-            bool newFrameFromQueue = firstRender;
+            newFrameFromQueue = firstRender;
             firstRender = false;
             if (auto latest = outputQueue->tryPopLatest()) {
                 currentSet = std::make_shared<IC4Ext::D3D12SyncedFrameSet>(
@@ -747,59 +785,28 @@ int main(int argc, char** argv)
                 newFrameFromQueue = true;
             }
 
-            const PlaneKeyboardUpdate planeUpdate =
-                UpdatePlaneFromKeyboard(plane, planeKeys);
+            planeUpdate = UpdatePlaneFromKeyboard(plane, planeKeys);
             const auto submitSteady = std::chrono::steady_clock::now();
-            const auto submitUnixUs = clock.unixMicroseconds(submitSteady);
-            bool submitOk = false;
-            try {
-                space.update();
-
-                const VarjoFrameInfoSnapshot frameInfo =
-                    space.frameInfoSnapshot();
-                if (!serviceLogging.submitFrameInfo(frameInfo)) {
-                    throw std::runtime_error(
-                        "Varjo services rejected the renderer FrameInfo snapshot");
-                }
-                serviceLogging.pump();
-
-                submitOk = true;
-                displayRing.markRendered(activeSlot);
-            } catch (...) {
-                auto failedRow = BuildRenderedFrameMetadata(
-                    renderRowIndex++,
-                    submitUnixUs,
-                    newFrameFromQueue,
-                    false,
-                    activeCalibration,
-                    planeUpdate,
-                    plane,
-                    config.placementMode,
-                    displayedMetadata,
-                    DualIC4Varjo::TimestampSourceName(config.timestampSource),
-                    activeSlot,
-                    clock,
-                    syncThread.stats(),
-                    outputQueue->stats(),
-                    leftCamera.stats(),
-                    rightCamera.stats());
-                if (!logger.enqueue(std::move(failedRow))) {
-                    std::cerr
-                        << "Metadata logger failed while recording a render error: "
-                        << logger.lastError() << '\n';
-                }
-                throw;
-            }
+            renderSubmitUnixUs = clock.unixMicroseconds(submitSteady);
+            renderSpace.frameContext().timeSeconds =
+                std::chrono::duration<double>(submitSteady - runStart).count();
+            renderSpace.frameContext().frameNumber =
+                static_cast<std::int64_t>(renderRowIndex + 1u);
+        };
+        renderThreadDesc.afterFrame = [&, placementMode = config.placementMode](
+            VarjoXR::XRSpace&,
+            const VarjoFrameInfoSnapshot&) {
+            displayRing.markRendered(activeSlot);
 
             auto row = BuildRenderedFrameMetadata(
                 renderRowIndex++,
-                submitUnixUs,
+                renderSubmitUnixUs,
                 newFrameFromQueue,
-                submitOk,
+                true,
                 activeCalibration,
                 planeUpdate,
                 plane,
-                config.placementMode,
+                placementMode,
                 displayedMetadata,
                 DualIC4Varjo::TimestampSourceName(config.timestampSource),
                 activeSlot,
@@ -812,12 +819,74 @@ int main(int argc, char** argv)
                 throw std::runtime_error(
                     "Metadata logger failed: " + logger.lastError());
             }
+        };
+
+        std::exception_ptr pendingError;
+        std::int64_t lastSubmittedFrameNumber = -1;
+        std::uint64_t skippedFrameInfoCount = 0;
+
+        try {
+            space.startRenderThread(std::move(renderThreadDesc));
+
+            while (!gStopRequested.load()) {
+                if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) {
+                    gStopRequested.store(true);
+                    break;
+                }
+                if (config.maxRuntimeSeconds > 0.0 &&
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - runStart).count() >=
+                        config.maxRuntimeSeconds) {
+                    gStopRequested.store(true);
+                    break;
+                }
+
+                space.rethrowRenderThreadException();
+                if (!space.renderThreadRunning()) {
+                    throw std::runtime_error(
+                        "XRSpace render thread stopped unexpectedly");
+                }
+
+                if (const auto frameInfo = space.latestFrameInfoSnapshot();
+                    frameInfo && frameInfo->valid &&
+                    frameInfo->frameNumber != lastSubmittedFrameNumber) {
+                    if (lastSubmittedFrameNumber >= 0 &&
+                        frameInfo->frameNumber > lastSubmittedFrameNumber + 1) {
+                        skippedFrameInfoCount += static_cast<std::uint64_t>(
+                            frameInfo->frameNumber - lastSubmittedFrameNumber - 1);
+                    }
+
+                    if (!serviceLogging.submitFrameInfo(*frameInfo)) {
+                        throw std::runtime_error(
+                            "Varjo services rejected the renderer FrameInfo snapshot");
+                    }
+                    lastSubmittedFrameNumber = frameInfo->frameNumber;
+                }
+
+                serviceLogging.pump();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        } catch (...) {
+            pendingError = std::current_exception();
+            gStopRequested.store(true);
+        }
+
+        space.requestRenderThreadStop();
+        space.stopRenderThread();
+        try {
+            space.rethrowRenderThreadException();
+        } catch (...) {
+            if (!pendingError) pendingError = std::current_exception();
         }
 
         serviceLogging.stop();
         logger.stop();
         stopThreads();
         displayRing.waitIdle();
+
+        if (pendingError) {
+            std::rethrow_exception(pendingError);
+        }
 
         const auto serviceStats = serviceLogging.summary();
         const auto leftStats = leftCamera.stats();
@@ -828,6 +897,9 @@ int main(int argc, char** argv)
                   << experimentOutput.directory.string() << '\n'
                   << "  rendered frame CSV: "
                   << config.metadataCsv.string() << '\n'
+                  << "  render frames: " << renderRowIndex << '\n'
+                  << "  FrameInfo skipped by main latest-only polling: "
+                  << skippedFrameInfoCount << '\n'
                   << "  left camera frames: " << leftStats.readFrames << '\n'
                   << "  right camera frames: " << rightStats.readFrames << '\n'
                   << "  synchronized sets: " << syncStats.emittedSets << '\n'
