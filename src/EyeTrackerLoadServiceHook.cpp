@@ -62,7 +62,8 @@ std::string SanitizeFilename(std::string value)
 std::filesystem::path ResolveOutputPath(int argc, char** argv)
 {
     if (const auto active = ActiveExperimentOutputLayout()) {
-        return active->directory / "eyetracking.csv";
+        return active->directory /
+               (active->resolvedProjectName + "_eyetracking.csv");
     }
 
     const std::filesystem::path baseDirectory =
