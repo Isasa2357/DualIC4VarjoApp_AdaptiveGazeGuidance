@@ -17,6 +17,13 @@ void SubmitFrameInfoServices(
 } // namespace
 } // namespace DualIC4Varjo
 
+#ifdef WIN32_LEAN_AND_MEAN
+#undef WIN32_LEAN_AND_MEAN
+#endif
+#ifdef NOMINMAX
+#undef NOMINMAX
+#endif
+
 #define main DualIC4VarjoBaseMain
 #define markRendered(...)                                                     \
     markRendered(__VA_ARGS__),                                                \
