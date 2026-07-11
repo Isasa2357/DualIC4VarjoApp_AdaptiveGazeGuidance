@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.10.0
+    VERSION 0.11.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -198,12 +198,12 @@ if(MSVC)
 endif()
 
 # -----------------------------------------------------------------------------
-# Application
+# Application - timestamp service load branch
 # -----------------------------------------------------------------------------
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
-    src/ApplicationMainPlaneControl.cpp
+    src/ApplicationMainTimestamp.cpp
     src/ExperimentOutput.cpp
     src/ExperimentOutput.hpp
     src/ImGuiStereoPreview.cpp
@@ -215,7 +215,9 @@ add_executable(DualIC4VarjoApp
     src/StereoDisplayTextureRing.cpp
     src/StereoDisplayTextureRing.hpp
     src/TimeUtil.cpp
-    src/TimeUtil.hpp)
+    src/TimeUtil.hpp
+    src/TimestampLoadService.cpp
+    src/TimestampLoadService.hpp)
 
 target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
 target_compile_definitions(DualIC4VarjoApp PRIVATE
