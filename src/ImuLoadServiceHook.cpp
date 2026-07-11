@@ -3,6 +3,7 @@
 #include <VarjoToolkit/Services/IMU/VarjoIMUService.hpp>
 
 #include <atomic>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -18,6 +19,7 @@ std::filesystem::path gOutputPath;
 std::string gLastError;
 std::unique_ptr<VarjoIMUService> gService;
 std::atomic<VarjoIMUService*> gServiceRaw{nullptr};
+std::atomic<bool> gStartAttempted{false};
 std::atomic<std::uint64_t> gFinalReceived{0};
 std::atomic<std::uint64_t> gFinalProcessed{0};
 std::atomic<std::uint64_t> gFinalWritten{0};
@@ -70,12 +72,17 @@ bool EnsureStarted(
         return true;
     }
 
+    bool expected = false;
+    if (!gStartAttempted.compare_exchange_strong(
+            expected,
+            true,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+        return false;
+    }
+
     try {
         std::lock_guard<std::mutex> lock(gStateMutex);
-        if (gService) {
-            gServiceRaw.store(gService.get(), std::memory_order_release);
-            return true;
-        }
         if (!session) {
             gLastError = "renderer Varjo session is null";
             return false;
@@ -122,6 +129,7 @@ void ImuLoadServiceHook::configure(int argc, char** argv)
     std::lock_guard<std::mutex> lock(gStateMutex);
     gOutputPath = ResolveOutputPath(argc, argv);
     gLastError.clear();
+    gStartAttempted.store(false, std::memory_order_release);
     gFinalReceived.store(0, std::memory_order_release);
     gFinalProcessed.store(0, std::memory_order_release);
     gFinalWritten.store(0, std::memory_order_release);
