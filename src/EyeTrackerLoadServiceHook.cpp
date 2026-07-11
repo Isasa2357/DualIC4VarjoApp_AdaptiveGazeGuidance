@@ -188,6 +188,22 @@ void EyeTrackerLoadServiceHook::submit(
     }
 }
 
+std::vector<VarjoEyeTrackingData> EyeTrackerLoadServiceHook::requestData()
+{
+    VarjoEyeTrackingService* service =
+        gServiceRaw.load(std::memory_order_acquire);
+    if (!service) return {};
+
+    auto deque = service->requestData();
+    std::vector<VarjoEyeTrackingData> result;
+    result.reserve(deque.size());
+    while (!deque.empty()) {
+        result.push_back(std::move(deque.front()));
+        deque.pop_front();
+    }
+    return result;
+}
+
 void EyeTrackerLoadServiceHook::stop() noexcept
 {
     if (gStartThread.joinable()) {
