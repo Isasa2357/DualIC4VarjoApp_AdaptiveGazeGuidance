@@ -1,46 +1,28 @@
 cmake_minimum_required(VERSION 3.21)
 
-# Resolve a vcpkg toolchain before project() so find_package(OpenCV) can use the
-# user's existing x64-windows installation. An explicitly supplied toolchain
-# always takes precedence.
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE OR CMAKE_TOOLCHAIN_FILE STREQUAL "")
-    set(_dual_vcpkg_root "")
-    if(DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
-        file(TO_CMAKE_PATH "$ENV{VCPKG_ROOT}" _dual_vcpkg_root)
-    else()
-        find_program(DUAL_IC4_VARJO_VCPKG_EXECUTABLE NAMES vcpkg)
-        if(DUAL_IC4_VARJO_VCPKG_EXECUTABLE)
-            get_filename_component(_dual_vcpkg_root "${DUAL_IC4_VARJO_VCPKG_EXECUTABLE}" DIRECTORY)
-        endif()
-    endif()
-    if(_dual_vcpkg_root AND EXISTS "${_dual_vcpkg_root}/scripts/buildsystems/vcpkg.cmake")
-        set(CMAKE_TOOLCHAIN_FILE
-            "${_dual_vcpkg_root}/scripts/buildsystems/vcpkg.cmake"
-            CACHE FILEPATH "vcpkg toolchain used for OpenCV" FORCE)
-        message(STATUS "DualIC4VarjoApp: auto-detected vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
-    endif()
-endif()
-set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg target triplet")
-
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.6.2
+    VERSION 0.7.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
-    message(FATAL_ERROR "This application requires Windows, Direct3D 12, IC Imaging Control 4, and Varjo Runtime.")
+    message(FATAL_ERROR
+        "This application requires Windows, Direct3D 12, IC Imaging Control 4, and Varjo Runtime.")
 endif()
 
 include(FetchContent)
-set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Do not update populated dependencies automatically" FORCE)
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL
+    "Do not update populated dependencies automatically" FORCE)
 
-set(DUAL_IC4_VARJO_IC4EXT_TAG "50db99c3e18a08af683ef69352cc52ffb55a7a2d")
-set(DUAL_IC4_VARJO_VARJOXR_TAG "3d28a950b54edeafa3e7b595b78cc3b47cdc2ef5")
-set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG "8512ba418dc0e63c67b6e0518ef84dc2b53fb39d")
+set(DUAL_IC4_VARJO_IC4EXT_TAG
+    "50db99c3e18a08af683ef69352cc52ffb55a7a2d")
+set(DUAL_IC4_VARJO_VARJOXR_TAG
+    "3d28a950b54edeafa3e7b595b78cc3b47cdc2ef5")
+set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG
+    "8512ba418dc0e63c67b6e0518ef84dc2b53fb39d")
 set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
-set(DUAL_IC4_VARJO_CALIBRATION_COMMIT "8470b8e34b0bdd50546cd2215c8969b0512c3eaa")
 
 # -----------------------------------------------------------------------------
-# IC Imaging Control 4 SDK discovery and validation
+# IC Imaging Control 4 SDK discovery
 # -----------------------------------------------------------------------------
 set(IC4_SDK_ROOT "" CACHE PATH "Path to the IC Imaging Control 4 SDK root")
 
@@ -107,18 +89,18 @@ if(NOT EXISTS "${_dual_ic4_resolved_sdk_root}/lib/x64/ic4core.lib")
         "IC4 headers were found, but ic4core.lib is missing: "
         "${_dual_ic4_resolved_sdk_root}/lib/x64/ic4core.lib")
 endif()
-set(IC4_SDK_ROOT "${_dual_ic4_resolved_sdk_root}" CACHE PATH "Path to the IC Imaging Control 4 SDK root" FORCE)
+set(IC4_SDK_ROOT "${_dual_ic4_resolved_sdk_root}"
+    CACHE PATH "Path to the IC Imaging Control 4 SDK root" FORCE)
 message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
 
 # -----------------------------------------------------------------------------
-# Resolve VarjoToolkit before VarjoXR so both targets use the same Varjo session
-# implementation. VarjoXR owns the dedicated render thread and the FrameInfo /
-# HLSL-constant double buffers. The pinned IC4Ext revision keeps copied-output
-# behavior deterministic across camera threads for live stereo calibration.
+# VarjoToolkit / VarjoXR / D3D12Helper / IC4Ext
 # -----------------------------------------------------------------------------
 if(VARJOXR_VARJO_SDK_ROOT)
-    set(VARJO_SDK_ROOT "${VARJOXR_VARJO_SDK_ROOT}" CACHE PATH "Path to Varjo Native SDK" FORCE)
+    set(VARJO_SDK_ROOT "${VARJOXR_VARJO_SDK_ROOT}"
+        CACHE PATH "Path to Varjo Native SDK" FORCE)
 endif()
+
 set(VARJOTOOLKIT_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 set(VARJOTOOLKIT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(VARJOTOOLKIT_BUILD_HMD_TESTS OFF CACHE BOOL "" FORCE)
@@ -132,15 +114,14 @@ if(NOT TARGET VarjoToolkit::VarjoToolkit)
     FetchContent_MakeAvailable(VarjoToolkit)
 endif()
 
-# -----------------------------------------------------------------------------
-# D3D12 / VarjoXR / IC4Ext dependencies
-# -----------------------------------------------------------------------------
 set(VARJOXR_ENABLE_D3D11 OFF CACHE BOOL "" FORCE)
 set(VARJOXR_ENABLE_D3D12 ON CACHE BOOL "" FORCE)
 set(VARJOXR_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 set(VARJOXR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(VARJOXR_VARJOTOOLKIT_GIT_TAG "${DUAL_IC4_VARJO_VARJOTOOLKIT_TAG}" CACHE STRING "" FORCE)
-set(VARJOXR_D3D12HELPER_GIT_TAG "${DUAL_IC4_VARJO_D3D12HELPER_TAG}" CACHE STRING "" FORCE)
+set(VARJOXR_VARJOTOOLKIT_GIT_TAG
+    "${DUAL_IC4_VARJO_VARJOTOOLKIT_TAG}" CACHE STRING "" FORCE)
+set(VARJOXR_D3D12HELPER_GIT_TAG
+    "${DUAL_IC4_VARJO_D3D12HELPER_TAG}" CACHE STRING "" FORCE)
 set(D3D12HELPER_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 set(D3D12HELPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(D3D12HELPER_INSTALL OFF CACHE BOOL "" FORCE)
@@ -157,7 +138,8 @@ set(IC4EXT_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 set(IC4EXT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(IC4EXT_ENABLE_D3D11 OFF CACHE BOOL "" FORCE)
 set(IC4EXT_ENABLE_D3D12 ON CACHE BOOL "" FORCE)
-set(IC4EXT_D3D12HELPER_GIT_TAG "${DUAL_IC4_VARJO_D3D12HELPER_TAG}" CACHE STRING "" FORCE)
+set(IC4EXT_D3D12HELPER_GIT_TAG
+    "${DUAL_IC4_VARJO_D3D12HELPER_TAG}" CACHE STRING "" FORCE)
 
 FetchContent_Declare(
     IC4Ext
@@ -166,57 +148,31 @@ FetchContent_Declare(
     GIT_SHALLOW    FALSE)
 FetchContent_MakeAvailable(IC4Ext)
 
-# -----------------------------------------------------------------------------
-# Calibration-only dependency. SOURCE_SUBDIR prevents the source repository's
-# top-level application and MFFrameSource dependency from being configured.
-# OpenCV remains PRIVATE inside VdcaStereoCalibrationOpenCV.
-# -----------------------------------------------------------------------------
-FetchContent_Declare(
-    VdcaCalibrationSource
-    GIT_REPOSITORY https://github.com/Isasa2357/VarjoDualCameraApplications.git
-    GIT_TAG        ${DUAL_IC4_VARJO_CALIBRATION_COMMIT}
-    GIT_SHALLOW    FALSE
-    SOURCE_SUBDIR  libraries/StereoCalibrationCore)
-FetchContent_MakeAvailable(VdcaCalibrationSource)
-FetchContent_GetProperties(
-    VdcaCalibrationSource
-    SOURCE_DIR DUAL_IC4_VARJO_CALIBRATION_SOURCE_DIR)
-add_subdirectory(
-    "${DUAL_IC4_VARJO_CALIBRATION_SOURCE_DIR}/libraries/StereoCalibrationOpenCV"
-    "${CMAKE_BINARY_DIR}/_deps/vdca-calibration-opencv-build"
-    EXCLUDE_FROM_ALL)
-
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
     src/ApplicationMain.cpp
+    src/DisplayTextureRing.cpp
+    src/DisplayTextureRing.hpp
     src/ExperimentOutput.cpp
     src/ExperimentOutput.hpp
     src/RenderedFrameMetadataLogger.cpp
     src/RenderedFrameMetadataLogger.hpp
-    src/StereoCalibrationSupport.cpp
-    src/StereoCalibrationSupport.hpp
-    src/StereoDisplayTextureRing.cpp
-    src/StereoDisplayTextureRing.hpp
     src/TimeUtil.cpp
     src/TimeUtil.hpp)
 
 target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
 target_compile_definitions(DualIC4VarjoApp PRIVATE
     WIN32_LEAN_AND_MEAN
-    NOMINMAX
-    # Keep calibration-side resize/copy output at the same frame rate as display.
-    IC4EXT_DEFAULT_COPIED_OUTPUT_FRAME_STRIDE=1
-    IC4EXT_DEFAULT_COPIED_OUTPUT_FRAME_BURST=1)
+    NOMINMAX)
 target_link_libraries(DualIC4VarjoApp PRIVATE
     IC4Ext::IC4Ext
     VarjoXR::VarjoXR
-    VarjoToolkit::VarjoToolkit
-    Vdca::StereoCalibrationCore
-    Vdca::StereoCalibrationOpenCV)
+    VarjoToolkit::VarjoToolkit)
 
 if(MSVC)
-    target_compile_options(DualIC4VarjoApp PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    target_compile_options(DualIC4VarjoApp PRIVATE
+        /W4 /permissive- /utf-8 /EHsc)
 endif()
 
 if(COMMAND varjoxr_copy_dxc_runtime)
@@ -237,5 +193,7 @@ if(DUAL_IC4_VARJO_IC4CORE_DLL)
                 "$<TARGET_FILE_DIR:DualIC4VarjoApp>"
         VERBATIM)
 else()
-    message(WARNING "ic4core.dll was not found under IC4_SDK_ROOT. Ensure its bin/x64 directory is on PATH.")
+    message(WARNING
+        "ic4core.dll was not found under IC4_SDK_ROOT. "
+        "Ensure its bin/x64 directory is on PATH.")
 endif()
