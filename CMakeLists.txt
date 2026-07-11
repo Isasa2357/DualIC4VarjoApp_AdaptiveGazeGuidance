@@ -23,7 +23,7 @@ endif()
 set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg target triplet")
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.5.1
+    VERSION 0.6.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -33,7 +33,7 @@ endif()
 include(FetchContent)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Do not update populated dependencies automatically" FORCE)
 
-set(DUAL_IC4_VARJO_IC4EXT_TAG "v1.0.1")
+set(DUAL_IC4_VARJO_IC4EXT_TAG "v1.0.2")
 set(DUAL_IC4_VARJO_VARJOXR_TAG "3d28a950b54edeafa3e7b595b78cc3b47cdc2ef5")
 set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG "8512ba418dc0e63c67b6e0518ef84dc2b53fb39d")
 set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
@@ -112,9 +112,9 @@ message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
 
 # -----------------------------------------------------------------------------
 # Resolve VarjoToolkit before VarjoXR so both targets use the same Varjo session
-# implementation. VarjoXR 0.3.0 owns the dedicated render thread and the
-# FrameInfo / HLSL-constant double buffers. Application service logging is not
-# built in this revision.
+# implementation. VarjoXR owns the dedicated render thread and the FrameInfo /
+# HLSL-constant double buffers. IC4Ext v1.0.2 provides runtime output-queue
+# attach/detach for the independent live-calibration frame path.
 # -----------------------------------------------------------------------------
 if(VARJOXR_VARJO_SDK_ROOT)
     set(VARJO_SDK_ROOT "${VARJOXR_VARJO_SDK_ROOT}" CACHE PATH "Path to Varjo Native SDK" FORCE)
@@ -189,6 +189,7 @@ add_subdirectory(
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
+    src/ApplicationMain.cpp
     src/ExperimentOutput.cpp
     src/ExperimentOutput.hpp
     src/RenderedFrameMetadataLogger.cpp
@@ -198,8 +199,7 @@ add_executable(DualIC4VarjoApp
     src/StereoDisplayTextureRing.cpp
     src/StereoDisplayTextureRing.hpp
     src/TimeUtil.cpp
-    src/TimeUtil.hpp
-    src/main.cpp)
+    src/TimeUtil.hpp)
 
 target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
 target_compile_definitions(DualIC4VarjoApp PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
