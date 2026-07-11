@@ -1,7 +1,51 @@
 cmake_minimum_required(VERSION 3.21)
 
+# vcpkg must be selected before project() so its toolchain participates in the
+# first CMake configure. Merely having vcpkg.exe on PATH is not enough for
+# find_package(OpenCV) to see packages installed by vcpkg.
+if(CMAKE_HOST_WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    set(_dual_ic4_vcpkg_toolchain "")
+
+    if(DEFINED ENV{VCPKG_ROOT} AND
+       NOT "$ENV{VCPKG_ROOT}" STREQUAL "")
+        file(TO_CMAKE_PATH "$ENV{VCPKG_ROOT}" _dual_ic4_vcpkg_root)
+        if(EXISTS "${_dual_ic4_vcpkg_root}/scripts/buildsystems/vcpkg.cmake")
+            set(_dual_ic4_vcpkg_toolchain
+                "${_dual_ic4_vcpkg_root}/scripts/buildsystems/vcpkg.cmake")
+        endif()
+    endif()
+
+    if(NOT _dual_ic4_vcpkg_toolchain)
+        find_program(_dual_ic4_vcpkg_executable
+            NAMES vcpkg vcpkg.exe)
+        if(_dual_ic4_vcpkg_executable)
+            get_filename_component(
+                _dual_ic4_vcpkg_root
+                "${_dual_ic4_vcpkg_executable}"
+                DIRECTORY)
+            if(EXISTS "${_dual_ic4_vcpkg_root}/scripts/buildsystems/vcpkg.cmake")
+                set(_dual_ic4_vcpkg_toolchain
+                    "${_dual_ic4_vcpkg_root}/scripts/buildsystems/vcpkg.cmake")
+            endif()
+        endif()
+    endif()
+
+    if(_dual_ic4_vcpkg_toolchain)
+        set(CMAKE_TOOLCHAIN_FILE
+            "${_dual_ic4_vcpkg_toolchain}"
+            CACHE FILEPATH
+            "vcpkg CMake toolchain file")
+        message(STATUS
+            "DualIC4VarjoApp: auto-detected vcpkg toolchain = ${CMAKE_TOOLCHAIN_FILE}")
+    else()
+        message(STATUS
+            "DualIC4VarjoApp: vcpkg toolchain was not auto-detected; "
+            "pass -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake")
+    endif()
+endif()
+
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.20.0
+    VERSION 0.20.1
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -149,8 +193,9 @@ FetchContent_Declare(
     GIT_SHALLOW    FALSE)
 FetchContent_MakeAvailable(IC4Ext)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d highgui)
+find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc calib3d highgui)
 message(STATUS "DualIC4VarjoApp: OpenCV version = ${OpenCV_VERSION}")
+message(STATUS "DualIC4VarjoApp: OpenCV directory = ${OpenCV_DIR}")
 
 FetchContent_Declare(
     DearImGui
