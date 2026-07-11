@@ -11,14 +11,45 @@ IC4Extで2台のIC4カメラをD3D12テクスチャとして取得し、`D3D12Fr
 ## 依存バージョン
 
 - IC4Ext: `v1.0.1`
-- VarjoXR: `v0.1.0`
-- VarjoToolkit: `v0.4.0`
+- VarjoXR: `v0.2.0`相当、commit `68fc5697c06ae842c0af3b9f647fb39ec9c3e019`
+- VarjoToolkit: `v0.5.0`相当、commit `97ec3b3cc975455d8a664657e6596f62b2df0cff`
 - D3D12Helper: `v1.13.0`
 - VarjoDualCameraApplicationsのキャリブレーション実装: commit `8470b8e34b0bdd50546cd2215c8969b0512c3eaa`
 - nlohmann/json: IC4Extが提供する`nlohmann_json::nlohmann_json`を共有
 - OpenCV: vcpkgの`x64-windows`パッケージ。キャリブレーション解析ターゲットだけで使用
 
-VarjoXR v0.1.0は古いVarjoToolkitコミットを内部指定しますが、本アプリではトップレベルでVarjoToolkit v0.4.0を先に生成し、VarjoXRとアプリケーションの両方に同じターゲットを使用させます。
+VarjoToolkitとVarjoXRは、外部FrameInfo入力化と`XRSpace::frameInfoSnapshot()`の実機テストが通った確定コミットへ固定しています。
+
+## Varjoフレーム同期
+
+`varjo_WaitSync`を呼ぶのはVarjoXRのD3D12レンダリングバックエンドだけです。
+
+```text
+VarjoXR D3D12 backend
+    |
+    +-- varjo_WaitSync() 1回
+    |
+    +-- VarjoFrameInfoSnapshotを保存
+            |
+            +-- Plane rendering
+            +-- VarjoEyeTrackingService
+            +-- VarjoIMUService
+```
+
+通常レンダリングでは各フレームで次の順に処理します。
+
+```cpp
+space.update();
+
+const VarjoFrameInfoSnapshot frameInfo =
+    space.frameInfoSnapshot();
+
+serviceLogging.submitFrameInfo(frameInfo);
+```
+
+Eye TrackingとIMUは内部で`varjo_WaitSync`を呼びません。同じsnapshotを受け取り、GazeへのFrameInfo対応付けとHead Pose CSV出力に使用します。VSTは従来どおりVarjo DataStream経路です。
+
+ライブキャリブレーション中はサービスがまだ起動していないため、Eye Tracking、IMU、VST、実験CSVへ校正中データは入りません。
 
 ## 処理構成
 
@@ -35,9 +66,10 @@ IC4 camera 1 --/                              |
                                                         -> latest JSON/snapshot
 
 Shared Varjo session
-  +-> VarjoEyeTrackingService -> eye_tracking.csv
-  +-> VarjoIMUService         -> imu.csv
-  +-> VarjoVSTService         -> left/right MP4 and metadata CSV
+  +-> VarjoXR D3D12 backend -> single WaitSync -> FrameInfoSnapshot
+  |                                               +-> EyeTrackingService
+  |                                               +-> IMUService
+  +-> VarjoVSTService -> left/right MP4 and metadata CSV
 ```
 
 視差補正はVarjoXR Planeの左右眼別`TextureProcessingDesc`へcompute HLSLを登録して行います。OpenCVはキャリブレーション用readback、チェッカーボード検出、行列推定だけで使用します。
@@ -56,7 +88,7 @@ Shared Varjo session
 
 ## ビルド（CMD）
 
-VarjoToolkitのバージョンと追加ソースが変わったため、以前のビルドディレクトリは削除してください。
+VarjoToolkitとVarjoXRの取得コミットが変わったため、以前のビルドディレクトリは削除してください。
 
 ```bat
 set "IC4_SDK_ROOT=%LOCALAPPDATA%\Programs\The Imaging Source Europe GmbH\IC Imaging Control 4"
@@ -124,17 +156,22 @@ suturing01_2
 
 3サービスのいずれかが開始できない場合、ログが部分的に欠けた状態で実験を続行せず、通常レンダリング開始前にエラー終了します。
 
+各レンダリングフレームで取得したsnapshotをEye TrackingとIMUの両方が受理できなかった場合も、FrameInfoログ欠損としてエラー終了します。
+
 ### Eye Tracking
 
 - 出力: `eye_tracking.csv`
 - filter: `NONE`
 - frequency: `MAXIMUM`
 - Gaze、Eye Measurements、IPD、表示座標への投影結果、対応FrameInfoを記録
+- VarjoXRが取得したFrameInfo履歴を最大512件保持してGaze時刻へ対応付け
 
 ### IMU / Head Pose
 
 - 出力: `imu.csv`
+- VarjoXRのsnapshotに含まれるCenter Poseを使用
 - pose、position、Euler角、角速度、FrameInfo、Varjo時刻とUnix時刻を記録
+- snapshot投入後の姿勢計算とCSV書き込みはIMUワーカースレッドで実行
 
 ### VST
 
@@ -142,7 +179,13 @@ suturing01_2
 - VST映像、stream frame情報、intrinsics、extrinsics、Varjo時刻とUnix時刻を記録
 - MP4エンコードにはPATH上の`ffmpeg.exe`を使用
 
-終了時には各サービスを停止してファイルを閉じ、件数・drop・write failureを`varjo_service_summary.txt`へ保存します。
+終了時には各サービスを停止してファイルを閉じ、次の統計を`varjo_service_summary.txt`へ保存します。
+
+- Gaze受信数、アプリケーションキューdrop数
+- Eye Trackingへ投入したFrameInfo数と履歴drop数
+- IMUの受信・処理・書き込み・drop数
+- VST左右フレーム数、drop数、write failure数
+- 各サービスのサンプルレート
 
 ## `--calib JSON_PATH|-`
 
