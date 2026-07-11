@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.10.0
+    VERSION 0.12.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -198,16 +198,18 @@ if(MSVC)
 endif()
 
 # -----------------------------------------------------------------------------
-# Application
+# Application - renderer-driven IMU service load branch
 # -----------------------------------------------------------------------------
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
-    src/ApplicationMainPlaneControl.cpp
+    src/ApplicationMainImu.cpp
     src/ExperimentOutput.cpp
     src/ExperimentOutput.hpp
     src/ImGuiStereoPreview.cpp
     src/ImGuiStereoPreview.hpp
+    src/ImuLoadServiceHook.cpp
+    src/ImuLoadServiceHook.hpp
     src/RenderedFrameMetadataLogger.cpp
     src/RenderedFrameMetadataLogger.hpp
     src/StereoCalibrationSupport.cpp
