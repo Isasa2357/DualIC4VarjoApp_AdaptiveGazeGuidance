@@ -2,28 +2,20 @@
 
 IC4Extで2台のIC4カメラをD3D12テクスチャとして取得し、`D3D12FrameSyncThread`で同期してVarjoXRのPlaneへ左右眼別に表示する実験用アプリケーションです。
 
-現在のリビジョンでは、ジッタ原因を切り分けるため、次のVarjoサービス処理をアプリケーションから削除しています。
-
-- Eye Tracking
-- IMU / Head Pose logging
-- VST動画・メタデータ保存
-
-アプリケーションが記録するのはレンダリングメタデータCSVだけです。
+現在のリビジョンではジッタ原因を切り分けるため、Eye Tracking、IMU、VSTなどのVarjoサービス処理はアプリケーションから削除しています。記録するのは`rendered_frames.csv`だけです。
 
 ## 依存バージョン
 
-- IC4Ext: `v1.0.1`
+- IC4Ext: `v1.0.2`
 - VarjoXR: `v0.3.0`相当、commit `3d28a950b54edeafa3e7b595b78cc3b47cdc2ef5`
 - VarjoToolkit: `v0.5.0`相当、commit `8512ba418dc0e63c67b6e0518ef84dc2b53fb39d`
 - D3D12Helper: `v1.13.0`
 - VarjoDualCameraApplicationsのキャリブレーション実装: commit `8470b8e34b0bdd50546cd2215c8969b0512c3eaa`
 - OpenCV: vcpkg `x64-windows`
 
-VarjoToolkitはVarjo SessionとVarjoXRの内部依存として使用しますが、アプリケーションからサービスクラスは生成しません。
+## 通常レンダリング
 
-## スレッド構成
-
-ライブキャリブレーション中はmainスレッドで同期レンダリングします。キャリブレーション確定後の通常レンダリングは、`XRSpace`の専用レンダースレッドで実行します。
+通常レンダリングは`XRSpace`の専用レンダースレッドで実行します。
 
 ```text
 IC4 camera 0 --\
@@ -39,23 +31,63 @@ XRSpace render thread
   +-- varjo_WaitSyncを1回実行
   +-- Plane render / Varjo submit
   +-- rendered_frames.csv用データをlogger queueへ投入
-
-Main thread
-  +-- Esc / 最大実行時間を監視
-  +-- レンダースレッド例外を監視
-  +-- 将来のHLSL constants更新をpublish可能
-  +-- stop処理
 ```
 
-通常レンダリング開始後、次はレンダースレッドだけが操作します。
+通常レンダリング開始後、`XRSpace`、D3D12 backend、`XRPlane`、`StereoDisplayTextureRing`、現在表示中の同期済みフレームはレンダースレッドだけが操作します。
 
-- `XRSpace`
-- D3D12 backend
-- `XRPlane`
-- `StereoDisplayTextureRing`
-- 現在表示中の同期済みフレーム
+## ライブキャリブレーションの動的キュー
 
-mainスレッドはFrameInfoを読み出したり、Eye Tracking・IMUへ提出したりしません。
+IC4Ext v1.0.2の次のAPIを使用します。
+
+```cpp
+camera.addOutputQueue(cameraIndex, queue);
+camera.removeOutputQueue(cameraIndex, queue);
+camera.outputQueueCount();
+```
+
+ライブキャリブレーション開始時だけ、各`D3D12CameraCaptureThread`へ校正専用キューを追加します。
+
+```text
+CameraCaptureThread
+  +-- calibration input queue  <- IC4Ext内部で独立D3D12コピー
+  +-- display input queue      <- 元のD3D12フレーム
+```
+
+`copyPerOutputQueue=true`のとき、IC4Extは最後の出力へ元フレームをmoveし、それより前の出力へ独立コピーを作成します。そのため、キュー登録順を次に固定します。
+
+```text
+1. calibration input queue
+2. display input queue
+```
+
+校正経路は独立した第2の`D3D12FrameSyncThread`を使用します。
+
+```text
+left/right camera
+  +-- display copyなし経路 -> display FrameSyncThread -> Varjo表示
+  +-- calibrationコピー経路 -> calibration FrameSyncThread
+                                    |
+                                    v
+                         LiveStereoCalibration submission worker
+                                    |
+                         GPU ready待ち・OpenCV解析
+```
+
+以前は`LiveStereoCalibration::submitLatest()`が左右フレームを自前コピーし、そのready fenceをレンダリングと同じmainスレッドで待っていました。現在は次のように変更しています。
+
+- 手動の`D3D12FrameCopier`を削除
+- 校正用の独立コピーはIC4Extへ委譲
+- ready fence待ちは`LiveStereoCalibration`内部のsubmission workerで実行
+- レンダリングループは校正コピー完了を待たない
+- 校正終了時に`removeOutputQueue()`で校正キューだけを解除
+- 通常表示キューはそのまま維持
+
+起動時と終了時には次の診断ログを出力します。
+
+```text
+[CALIB] Dynamic IC4Ext queues attached. leftOutputs=2 rightOutputs=2
+[CALIB] Dynamic IC4Ext queues detached. leftRemoved=1 rightRemoved=1 leftOutputs=1 rightOutputs=1
+```
 
 ## HLSL定数の非同期共有
 
@@ -68,10 +100,6 @@ state.processingConstants.push_back(leftUpdate);
 state.processingConstants.push_back(rightUpdate);
 space.publishAsyncRenderState(std::move(state));
 ```
-
-レンダースレッドは各フレーム開始前に最新revisionを確認し、新しいstateだけをPlaneへ反映します。途中のstateはlatest-only方式で上書きできます。
-
-現在はキャリブレーション確定後に初期定数を1回publishします。将来、時間的に変化する表示を追加する場合はmainまたは制御用スレッドから新しいrevisionをpublishします。
 
 ## 必要環境
 
@@ -86,7 +114,7 @@ VST保存を削除したため、`ffmpeg.exe`は不要です。
 
 ## ビルド（CMD）
 
-依存コミットやソース構成が変わっているため、以前のビルドディレクトリを削除してください。
+依存バージョンが変わっているため、以前のビルドディレクトリを削除してください。
 
 ```bat
 set "IC4_SDK_ROOT=%LOCALAPPDATA%\Programs\The Imaging Source Europe GmbH\IC Imaging Control 4"
@@ -104,37 +132,9 @@ cmake -S . -B out\build\default -G "Visual Studio 17 2022" -A x64 ^
 cmake --build out\build\default --config Release --parallel
 ```
 
-## 実験出力ディレクトリ
-
-`--dir`と`--project`は必須です。
-
-```text
---dir <親ディレクトリ>
---project <フォルダ名>
-```
-
-生成されるファイルは次です。
-
-```text
-<resolved project directory>/
-  rendered_frames.csv
-```
-
-次のファイルは現在生成しません。
-
-```text
-eye_tracking.csv
-imu.csv
-varjo_vst_left.mp4
-varjo_vst_right.mp4
-varjo_vst_left_metadata.csv
-varjo_vst_right_metadata.csv
-varjo_service_summary.txt
-```
-
-`--metadata-csv FILENAME`を指定すると、`rendered_frames.csv`のファイル名を変更できます。
-
 ## 実行例
+
+既存のキャリブレーションJSONを使う場合:
 
 ```bat
 out\build\default\Release\DualIC4VarjoApp.exe ^
@@ -154,6 +154,7 @@ out\build\default\Release\DualIC4VarjoApp.exe ^
   --camera-start-delay-ms 2000 ^
   --sync-timestamp host ^
   --sync-tolerance-ms 5.0 ^
+  --d3d12-debug 0 ^
   --calib "C:\Users\MiyafujiLab2\Downloads\stereo_calibration.json" ^
   --metadata-csv rendered_frames.csv
 ```
@@ -164,9 +165,14 @@ out\build\default\Release\DualIC4VarjoApp.exe ^
   --calib - ^
 ```
 
-## Planeのキー操作
+## 出力
 
-操作は押下エッジで処理します。
+```text
+<resolved project directory>/
+  rendered_frames.csv
+```
+
+## Planeのキー操作
 
 | キー | 動作 |
 |---|---|
@@ -175,7 +181,3 @@ out\build\default\Release\DualIC4VarjoApp.exe ^
 | Shift + ↑ / ↓ | 前後へ0.01 m |
 | Shift + ← / → | Plane幅を0.01 m変更 |
 | Esc / Ctrl+C | 終了 |
-
-## 現在の目的
-
-このサービスなし構成は、レンダリングジッタがEye Tracking、IMU、VST、または共通Varjo Sessionへの並行アクセスによるものかを切り分けるための基準実装です。
