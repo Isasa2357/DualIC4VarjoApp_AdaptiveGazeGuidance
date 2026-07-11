@@ -103,7 +103,7 @@ bool VarjoServiceLogging::start(std::string& error)
         }
         eyeStarted_ = true;
 
-        if (!imu_->start(false)) {
+        if (!imu_->start()) {
             error = "VarjoIMUService failed to start: " +
                 WideToUtf8(imu_->lastError());
             stop();
@@ -125,6 +125,22 @@ bool VarjoServiceLogging::start(std::string& error)
     } catch (const std::exception& exception) {
         error = std::string("Varjo service logging start failed: ") + exception.what();
         stop();
+        return false;
+    }
+}
+
+bool VarjoServiceLogging::submitFrameInfo(
+    const VarjoFrameInfoSnapshot& snapshot) noexcept
+{
+    if (!running_ || !snapshot.valid) return false;
+
+    try {
+        const bool eyeAccepted =
+            eyeStarted_ && eyeTracking_ && eyeTracking_->submitFrameInfo(snapshot);
+        const bool imuAccepted =
+            imuStarted_ && imu_ && imu_->submitFrameInfo(snapshot);
+        return eyeAccepted && imuAccepted;
+    } catch (...) {
         return false;
     }
 }
@@ -171,10 +187,16 @@ VarjoServiceLoggingSummary VarjoServiceLogging::summary() const
     if (eyeTracking_) {
         result.gazeReceived = eyeTracking_->receivedSampleCount();
         result.gazeDropped = eyeTracking_->droppedSampleCount();
+        result.gazeFrameInfoSubmitted = eyeTracking_->submittedFrameInfoCount();
+        result.gazeFrameInfoDropped = eyeTracking_->droppedFrameInfoCount();
         result.gazeSamplesPerSecond = eyeTracking_->getSamplesPerSecond();
     }
     if (imu_) {
         result.imuRows = imu_->rowCount();
+        result.imuReceived = imu_->receivedSampleCount();
+        result.imuProcessed = imu_->processedSampleCount();
+        result.imuWritten = imu_->writtenSampleCount();
+        result.imuDropped = imu_->droppedSampleCount();
         result.imuSamplesPerSecond = imu_->getSamplesPerSecond();
     }
     if (vst_) {
@@ -201,9 +223,15 @@ void VarjoServiceLogging::writeSummaryFileNoThrow() const noexcept
 
         output << "gaze_received=" << values.gazeReceived << '\n'
                << "gaze_queue_dropped=" << values.gazeDropped << '\n'
+               << "gaze_frame_info_submitted=" << values.gazeFrameInfoSubmitted << '\n'
+               << "gaze_frame_info_history_dropped=" << values.gazeFrameInfoDropped << '\n'
                << "gaze_samples_per_second=" << std::fixed << std::setprecision(3)
                << values.gazeSamplesPerSecond << '\n'
                << "imu_rows=" << values.imuRows << '\n'
+               << "imu_received=" << values.imuReceived << '\n'
+               << "imu_processed=" << values.imuProcessed << '\n'
+               << "imu_written=" << values.imuWritten << '\n'
+               << "imu_queue_dropped=" << values.imuDropped << '\n'
                << "imu_samples_per_second=" << values.imuSamplesPerSecond << '\n'
                << "vst_left_frames=" << values.vstLeftFrames << '\n'
                << "vst_right_frames=" << values.vstRightFrames << '\n'
