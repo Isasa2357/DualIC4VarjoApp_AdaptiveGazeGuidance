@@ -2,11 +2,15 @@
 
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <system_error>
 
 namespace DualIC4Varjo {
 namespace {
+
+std::mutex gOutputLayoutMutex;
+std::optional<ExperimentOutputLayout> gActiveOutputLayout;
 
 void ValidateProjectName(const std::string& projectName)
 {
@@ -35,9 +39,7 @@ std::filesystem::path ResolveMetadataFilename(
     return filename;
 }
 
-} // namespace
-
-ExperimentOutputLayout CreateExperimentOutputLayout(
+ExperimentOutputLayout AllocateExperimentOutputLayout(
     const std::filesystem::path& baseDirectory,
     const std::string& projectName,
     const std::filesystem::path& requestedRenderedFramesCsv)
@@ -48,7 +50,8 @@ ExperimentOutputLayout CreateExperimentOutputLayout(
     }
 
     std::error_code ec;
-    const std::filesystem::path absoluteBase = std::filesystem::absolute(baseDirectory, ec);
+    const std::filesystem::path absoluteBase =
+        std::filesystem::absolute(baseDirectory, ec);
     if (ec) {
         throw std::runtime_error(
             "failed to resolve --dir: " + ec.message());
@@ -86,13 +89,52 @@ ExperimentOutputLayout CreateExperimentOutputLayout(
                 "failed to create experiment directory '" + candidate.string() +
                 "': " + ec.message());
         }
-
-        // create_directory() returns false when the candidate already exists.
-        // Continue with the next suffix regardless of whether it is a file or a
-        // directory.
     }
 
     throw std::runtime_error("could not allocate a unique experiment directory");
+}
+
+} // namespace
+
+ExperimentOutputLayout ReserveExperimentOutputLayout(
+    const std::filesystem::path& baseDirectory,
+    const std::string& projectName,
+    const std::filesystem::path& requestedRenderedFramesCsv)
+{
+    std::lock_guard<std::mutex> lock(gOutputLayoutMutex);
+    if (gActiveOutputLayout.has_value()) {
+        return *gActiveOutputLayout;
+    }
+
+    gActiveOutputLayout = AllocateExperimentOutputLayout(
+        baseDirectory,
+        projectName,
+        requestedRenderedFramesCsv);
+    return *gActiveOutputLayout;
+}
+
+std::optional<ExperimentOutputLayout> ActiveExperimentOutputLayout()
+{
+    std::lock_guard<std::mutex> lock(gOutputLayoutMutex);
+    return gActiveOutputLayout;
+}
+
+ExperimentOutputLayout CreateExperimentOutputLayout(
+    const std::filesystem::path& baseDirectory,
+    const std::string& projectName,
+    const std::filesystem::path& requestedRenderedFramesCsv)
+{
+    {
+        std::lock_guard<std::mutex> lock(gOutputLayoutMutex);
+        if (gActiveOutputLayout.has_value()) {
+            return *gActiveOutputLayout;
+        }
+    }
+
+    return ReserveExperimentOutputLayout(
+        baseDirectory,
+        projectName,
+        requestedRenderedFramesCsv);
 }
 
 } // namespace DualIC4Varjo
