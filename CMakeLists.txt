@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.16.0
+    VERSION 0.17.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -22,9 +22,6 @@ set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG
 set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
 set(DUAL_IC4_VARJO_IMGUI_TAG "v1.92.5")
 
-# -----------------------------------------------------------------------------
-# IC Imaging Control 4 SDK discovery
-# -----------------------------------------------------------------------------
 set(IC4_SDK_ROOT "" CACHE PATH "Path to the IC Imaging Control 4 SDK root")
 
 function(dual_ic4_varjo_normalize_ic4_root candidate out_root)
@@ -100,9 +97,6 @@ set(IC4_SDK_ROOT "${_dual_ic4_resolved_sdk_root}"
     CACHE PATH "Path to the IC Imaging Control 4 SDK root" FORCE)
 message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
 
-# -----------------------------------------------------------------------------
-# VarjoToolkit / VarjoXR / D3D12Helper / IC4Ext
-# -----------------------------------------------------------------------------
 if(VARJOXR_VARJO_SDK_ROOT)
     set(VARJO_SDK_ROOT "${VARJOXR_VARJO_SDK_ROOT}"
         CACHE PATH "Path to Varjo Native SDK" FORCE)
@@ -155,9 +149,6 @@ FetchContent_Declare(
     GIT_SHALLOW    FALSE)
 FetchContent_MakeAvailable(IC4Ext)
 
-# -----------------------------------------------------------------------------
-# Dear ImGui Win32 + DirectX 12 backends
-# -----------------------------------------------------------------------------
 FetchContent_Declare(
     DearImGui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -197,9 +188,6 @@ if(MSVC)
         /W4 /permissive- /utf-8 /EHsc)
 endif()
 
-# -----------------------------------------------------------------------------
-# Application - timestamp + IMU + VST + EyeTracker integration
-# -----------------------------------------------------------------------------
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
@@ -212,6 +200,8 @@ add_executable(DualIC4VarjoApp
     src/ImGuiStereoPreview.hpp
     src/ImuLoadServiceHook.cpp
     src/ImuLoadServiceHook.hpp
+    src/KeyInputService.cpp
+    src/KeyInputService.hpp
     src/RenderedFrameMetadataLogger.cpp
     src/RenderedFrameMetadataLogger.hpp
     src/StereoCalibrationSupport.cpp
