@@ -113,8 +113,8 @@ message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
 # -----------------------------------------------------------------------------
 # Resolve VarjoToolkit before VarjoXR so both targets use the same Varjo session
 # implementation. VarjoXR owns the dedicated render thread and the FrameInfo /
-# HLSL-constant double buffers. The pinned IC4Ext revision aligns sampled copied
-# output windows across camera threads so live calibration receives stereo pairs.
+# HLSL-constant double buffers. The pinned IC4Ext revision keeps copied-output
+# behavior deterministic across camera threads for live stereo calibration.
 # -----------------------------------------------------------------------------
 if(VARJOXR_VARJO_SDK_ROOT)
     set(VARJO_SDK_ROOT "${VARJOXR_VARJO_SDK_ROOT}" CACHE PATH "Path to Varjo Native SDK" FORCE)
@@ -205,8 +205,9 @@ target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
 target_compile_definitions(DualIC4VarjoApp PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
-    IC4EXT_DEFAULT_COPIED_OUTPUT_FRAME_STRIDE=32
-    IC4EXT_DEFAULT_COPIED_OUTPUT_FRAME_BURST=8)
+    # Keep calibration-side resize/copy output at the same frame rate as display.
+    IC4EXT_DEFAULT_COPIED_OUTPUT_FRAME_STRIDE=1
+    IC4EXT_DEFAULT_COPIED_OUTPUT_FRAME_BURST=1)
 target_link_libraries(DualIC4VarjoApp PRIVATE
     IC4Ext::IC4Ext
     VarjoXR::VarjoXR
