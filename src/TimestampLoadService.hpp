@@ -6,8 +6,10 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 
 class VarjoSession;
 class VarjoTimestampMapping;
