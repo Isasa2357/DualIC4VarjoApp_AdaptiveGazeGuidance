@@ -7,6 +7,7 @@
 
 #include "CoordinatedCameraCaptureThread.hpp"
 #include "RawStereoNvencRecordingIntegration.hpp"
+#include "CalibrationRuntimeBridge.hpp"
 
 // The included application defines these macros itself. Undefine them here to
 // avoid C4005 while keeping Windows headers already parsed with NOMINMAX.
@@ -20,7 +21,26 @@
 #define D3D12FrameSyncThread RecordingD3D12FrameSyncThread
 #define StereoDisplayTextureRing RecordingStereoDisplayTextureRing
 #define RenderedFrameMetadataLogger RecordingRenderedFrameMetadataLogger
+
+// Register the Plane immediately after XRSpace::createPlane() returns. The
+// render-token replacement applies calibration-only keyboard input on the
+// Varjo render thread, avoiding concurrent XRPlane mutation from the OpenCV
+// calibration thread.
+#define createPlane(...) createPlane(__VA_ARGS__); \
+    DualIC4Varjo::CalibrationRuntimeBridge::RegisterPlane(plane)
+#define render() render(); \
+    DualIC4Varjo::CalibrationRuntimeBridge::ApplyPlaneInputAfterRender(plane)
+
+// Keep the original Q/R/Esc termination semantics, but move the OpenCV window
+// offscreen and report quality through the console.
+#define RunCheckerboardStereoCalibration \
+    DualIC4Varjo::CalibrationRuntimeBridge::RunHeadlessCheckerboardStereoCalibration
+
 #include "ApplicationMainRealtimeCalibration.cpp"
+
+#undef RunCheckerboardStereoCalibration
+#undef render
+#undef createPlane
 #undef RenderedFrameMetadataLogger
 #undef StereoDisplayTextureRing
 #undef D3D12FrameSyncThread
