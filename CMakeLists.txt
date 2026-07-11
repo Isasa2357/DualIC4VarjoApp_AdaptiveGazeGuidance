@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.15.0
+    VERSION 0.16.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -198,14 +198,16 @@ if(MSVC)
 endif()
 
 # -----------------------------------------------------------------------------
-# Application - timestamp + renderer-driven IMU + VST integration
+# Application - timestamp + IMU + VST + EyeTracker integration
 # -----------------------------------------------------------------------------
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
-    src/ApplicationMainTimestampImuVst.cpp
+    src/ApplicationMainTimestampImuVstEyeTracker.cpp
     src/ExperimentOutput.cpp
     src/ExperimentOutput.hpp
+    src/EyeTrackerLoadServiceHook.cpp
+    src/EyeTrackerLoadServiceHook.hpp
     src/ImGuiStereoPreview.cpp
     src/ImGuiStereoPreview.hpp
     src/ImuLoadServiceHook.cpp
@@ -224,9 +226,6 @@ add_executable(DualIC4VarjoApp
     src/VstLoadServiceHook.hpp)
 
 target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
-target_compile_definitions(DualIC4VarjoApp PRIVATE
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX)
 target_link_libraries(DualIC4VarjoApp PRIVATE
     IC4Ext::IC4Ext
     VarjoXR::VarjoXR
