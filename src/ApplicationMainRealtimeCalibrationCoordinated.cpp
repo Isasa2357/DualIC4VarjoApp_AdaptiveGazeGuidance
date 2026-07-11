@@ -6,17 +6,22 @@
 #endif
 
 #include "CoordinatedCameraCaptureThread.hpp"
+#include "RawStereoNvencRecordingIntegration.hpp"
 
-// ApplicationMainRealtimeCalibration.cpp defines these macros itself. Undefine
-// them here to avoid C4005 while keeping Windows headers already parsed with
-// NOMINMAX enabled.
+// The included application defines these macros itself. Undefine them here to
+// avoid C4005 while keeping Windows headers already parsed with NOMINMAX.
 #undef WIN32_LEAN_AND_MEAN
 #undef NOMINMAX
 
-// ApplicationMainRealtimeCalibration.cpp uses IC4Ext::D3D12CameraCaptureThread.
-// Replace only that token in this translation unit with the application-local
-// compatibility wrapper. IC4Ext headers were already included above, so their
-// declarations are not rewritten by this macro.
+// Replace only application-level types in this translation unit. Their original
+// headers were included before these macros, so dependency declarations are not
+// rewritten.
 #define D3D12CameraCaptureThread CoordinatedD3D12CameraCaptureThread
+#define D3D12FrameSyncThread RecordingD3D12FrameSyncThread
+#define StereoDisplayTextureRing RecordingStereoDisplayTextureRing
+#define RenderedFrameMetadataLogger RecordingRenderedFrameMetadataLogger
 #include "ApplicationMainRealtimeCalibration.cpp"
+#undef RenderedFrameMetadataLogger
+#undef StereoDisplayTextureRing
+#undef D3D12FrameSyncThread
 #undef D3D12CameraCaptureThread
