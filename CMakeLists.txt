@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.9.0
+    VERSION 0.10.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -203,7 +203,7 @@ endif()
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
-    src/ApplicationMain.cpp
+    src/ApplicationMainPlaneControl.cpp
     src/ExperimentOutput.cpp
     src/ExperimentOutput.hpp
     src/ImGuiStereoPreview.cpp
