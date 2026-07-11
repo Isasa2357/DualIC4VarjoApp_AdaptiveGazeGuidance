@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Varjo.h>
+#include <VarjoToolkit/Core/VarjoFrameInfo.hpp>
 
 #include <cstdint>
 #include <filesystem>
@@ -16,9 +17,15 @@ namespace DualIC4Varjo {
 struct VarjoServiceLoggingSummary {
     std::uint64_t gazeReceived = 0;
     std::uint64_t gazeDropped = 0;
+    std::uint64_t gazeFrameInfoSubmitted = 0;
+    std::uint64_t gazeFrameInfoDropped = 0;
     double gazeSamplesPerSecond = 0.0;
 
     std::uint64_t imuRows = 0;
+    std::uint64_t imuReceived = 0;
+    std::uint64_t imuProcessed = 0;
+    std::uint64_t imuWritten = 0;
+    std::uint64_t imuDropped = 0;
     double imuSamplesPerSecond = 0.0;
 
     std::uint64_t vstLeftFrames = 0;
@@ -40,6 +47,13 @@ public:
     VarjoServiceLogging& operator=(const VarjoServiceLogging&) = delete;
 
     bool start(std::string& error);
+
+    // Distribute the single snapshot captured by VarjoXR's rendering WaitSync to
+    // Eye Tracking and IMU. This function never performs another WaitSync.
+    bool submitFrameInfo(const VarjoFrameInfoSnapshot& snapshot) noexcept;
+
+    // Drain the optional application-facing Eye Tracking queue. CSV output is
+    // performed by the service worker and is not affected by this drain.
     void pump();
     void stop() noexcept;
 
