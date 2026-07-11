@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.25)
 
 # vcpkg must be selected before project() so its toolchain participates in the
 # first CMake configure. Merely having vcpkg.exe on PATH is not enough for
@@ -45,7 +45,7 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.20.2
+    VERSION 0.21.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -67,6 +67,8 @@ set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
 set(DUAL_IC4_VARJO_IMGUI_TAG "v1.92.5")
 
 set(IC4_SDK_ROOT "" CACHE PATH "Path to the IC Imaging Control 4 SDK root")
+set(D3D12_NVENC_VIDEO_WRITER_ROOT "" CACHE PATH
+    "Path to the uploaded D3D12NvencVideoWriter project root")
 
 function(dual_ic4_varjo_normalize_ic4_root candidate out_root)
     if(NOT candidate)
@@ -197,6 +199,43 @@ find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc calib3d highgui)
 message(STATUS "DualIC4VarjoApp: OpenCV version = ${OpenCV_VERSION}")
 message(STATUS "DualIC4VarjoApp: OpenCV directory = ${OpenCV_DIR}")
 
+if(NOT D3D12_NVENC_VIDEO_WRITER_ROOT AND
+   DEFINED ENV{D3D12_NVENC_VIDEO_WRITER_ROOT} AND
+   NOT "$ENV{D3D12_NVENC_VIDEO_WRITER_ROOT}" STREQUAL "")
+    file(TO_CMAKE_PATH
+        "$ENV{D3D12_NVENC_VIDEO_WRITER_ROOT}"
+        D3D12_NVENC_VIDEO_WRITER_ROOT)
+endif()
+
+set(_dual_ic4_nvenc_writer_candidates
+    "${D3D12_NVENC_VIDEO_WRITER_ROOT}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/external/D3D12NvencVideoWriter"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../D3D12NvencVideoWriter")
+set(_dual_ic4_nvenc_writer_root "")
+foreach(candidate IN LISTS _dual_ic4_nvenc_writer_candidates)
+    if(candidate AND
+       EXISTS "${candidate}/CMakeLists.txt" AND
+       EXISTS "${candidate}/include/D3D12NvencVideoWriter/D3D12NvencVideoWriter.hpp")
+        set(_dual_ic4_nvenc_writer_root "${candidate}")
+        break()
+    endif()
+endforeach()
+
+if(NOT _dual_ic4_nvenc_writer_root)
+    message(FATAL_ERROR
+        "D3D12NvencVideoWriter was not found. Extract the uploaded library and "
+        "pass -DD3D12_NVENC_VIDEO_WRITER_ROOT=<path>/D3D12NvencVideoWriter, or "
+        "set the D3D12_NVENC_VIDEO_WRITER_ROOT environment variable.")
+endif()
+
+set(D3D12_NVENC_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
+add_subdirectory(
+    "${_dual_ic4_nvenc_writer_root}"
+    "${CMAKE_BINARY_DIR}/_deps/D3D12NvencVideoWriter"
+    EXCLUDE_FROM_ALL)
+message(STATUS
+    "DualIC4VarjoApp: D3D12NvencVideoWriter root = ${_dual_ic4_nvenc_writer_root}")
+
 FetchContent_Declare(
     DearImGui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -255,6 +294,9 @@ add_executable(DualIC4VarjoApp
     src/ImuLoadServiceHook.hpp
     src/KeyInputService.cpp
     src/KeyInputService.hpp
+    src/RawStereoNvencRecorder.cpp
+    src/RawStereoNvencRecorder.hpp
+    src/RawStereoNvencRecordingIntegration.hpp
     src/RenderedFrameMetadataLogger.cpp
     src/RenderedFrameMetadataLogger.hpp
     src/StereoCalibrationSave.cpp
@@ -276,7 +318,9 @@ target_link_libraries(DualIC4VarjoApp PRIVATE
     VarjoXR::VarjoXR
     VarjoToolkit::VarjoToolkit
     DualIC4Varjo::ImGui
+    D3D12Nvenc::VideoWriter
     nlohmann_json::nlohmann_json
+    shell32
     ${OpenCV_LIBS})
 
 if(MSVC)
@@ -290,6 +334,38 @@ endif()
 if(COMMAND varjoxr_copy_varjo_runtime)
     varjoxr_copy_varjo_runtime(DualIC4VarjoApp)
 endif()
+
+set(_dual_ic4_d3d12helper_shader_candidates
+    "${d3d12helper_SOURCE_DIR}/shaders"
+    "${D3D12Helper_SOURCE_DIR}/shaders"
+    "${CMAKE_BINARY_DIR}/_deps/d3d12helper-src/shaders")
+set(_dual_ic4_d3d12helper_shader_root "")
+foreach(candidate IN LISTS _dual_ic4_d3d12helper_shader_candidates)
+    if(candidate AND EXISTS "${candidate}/D3D12Processing")
+        set(_dual_ic4_d3d12helper_shader_root "${candidate}")
+        break()
+    endif()
+endforeach()
+if(_dual_ic4_d3d12helper_shader_root)
+    add_custom_command(TARGET DualIC4VarjoApp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${_dual_ic4_d3d12helper_shader_root}"
+            "$<TARGET_FILE_DIR:DualIC4VarjoApp>/shaders"
+        COMMENT "Copying D3D12Helper processing shaders for NVENC recording"
+        VERBATIM)
+else()
+    message(WARNING
+        "D3D12Helper shader directory was not found. The NVENC writer requires "
+        "shaders/D3D12Processing next to DualIC4VarjoApp.exe.")
+endif()
+
+add_custom_command(TARGET DualIC4VarjoApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_RUNTIME_DLLS:DualIC4VarjoApp>
+        $<TARGET_FILE_DIR:DualIC4VarjoApp>
+    COMMAND_EXPAND_LISTS
+    COMMENT "Copying dependent runtime DLLs"
+    VERBATIM)
 
 find_file(DUAL_IC4_VARJO_IC4CORE_DLL
     NAMES ic4core.dll
