@@ -3,6 +3,7 @@
 #include "GazeOnCameraFrameService.hpp"
 #include "ImuLoadServiceHook.hpp"
 #include "KeyInputService.hpp"
+#include "RealtimeCalibrationBootstrap.hpp"
 #include "TimestampLoadService.hpp"
 #include "VstLoadServiceHook.hpp"
 
@@ -14,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace DualIC4Varjo {
 namespace {
@@ -38,6 +40,14 @@ bool HasFlag(int argc, char** argv, const std::string& option)
         if (argv[index] && option == argv[index]) return true;
     }
     return false;
+}
+
+std::vector<char*> MutableArguments(std::vector<std::string>& values)
+{
+    std::vector<char*> result;
+    result.reserve(values.size());
+    for (auto& value : values) result.push_back(value.data());
+    return result;
 }
 
 ExperimentOutputLayout ReserveOutputFromArguments(int argc, char** argv)
@@ -146,15 +156,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    const auto calibrationArgument =
-        DualIC4Varjo::FindArgumentValue(argc, argv, "--calib");
-    const std::optional<std::filesystem::path> calibrationPath =
-        calibrationArgument
-            ? std::optional<std::filesystem::path>(*calibrationArgument)
-            : std::nullopt;
-    const auto gazeCameraPath = outputLayout.directory /
-        (outputLayout.resolvedProjectName + "_gaze_on_camera_frame.csv");
-
     std::cout
         << "[OUTPUT] requested project : "
         << outputLayout.requestedProjectName << '\n'
@@ -163,9 +164,41 @@ int main(int argc, char** argv)
         << "[OUTPUT] directory         : "
         << outputLayout.directory.string() << '\n';
 
-    DualIC4Varjo::ImuLoadServiceHook::configure(argc, argv);
-    DualIC4Varjo::VstLoadServiceHook::configure(argc, argv);
-    DualIC4Varjo::EyeTrackerLoadServiceHook::configure(argc, argv);
+    // No logging or Varjo data service is started before this stage returns.
+    const auto bootstrap =
+        DualIC4Varjo::RunRealtimeCalibrationBootstrap(
+            argc, argv, outputLayout);
+    if (!bootstrap.ok) {
+        if (!bootstrap.aborted) {
+            std::cerr << "Realtime calibration bootstrap failed: "
+                      << bootstrap.error << '\n';
+        }
+        return bootstrap.aborted ? 0 : 1;
+    }
+
+    std::vector<std::string> runtimeArgumentStorage =
+        bootstrap.forwardedArguments;
+    auto runtimeArguments =
+        DualIC4Varjo::MutableArguments(runtimeArgumentStorage);
+    const int runtimeArgc = static_cast<int>(runtimeArguments.size());
+    char** runtimeArgv = runtimeArguments.data();
+
+    const auto calibrationArgument =
+        DualIC4Varjo::FindArgumentValue(
+            runtimeArgc, runtimeArgv, "--calib");
+    const std::optional<std::filesystem::path> calibrationPath =
+        calibrationArgument
+            ? std::optional<std::filesystem::path>(*calibrationArgument)
+            : std::nullopt;
+    const auto gazeCameraPath = outputLayout.directory /
+        (outputLayout.resolvedProjectName + "_gaze_on_camera_frame.csv");
+
+    std::cout
+        << "[RUN] Calibration stage complete. Starting all logs/services now.\n";
+
+    DualIC4Varjo::ImuLoadServiceHook::configure(runtimeArgc, runtimeArgv);
+    DualIC4Varjo::VstLoadServiceHook::configure(runtimeArgc, runtimeArgv);
+    DualIC4Varjo::EyeTrackerLoadServiceHook::configure(runtimeArgc, runtimeArgv);
     if (!DualIC4Varjo::GazeOnCameraFrameHook::configure(
             gazeCameraPath, calibrationPath)) {
         std::cerr
@@ -185,7 +218,8 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    DualIC4Varjo::TimestampLoadService timestampService(argc, argv);
+    DualIC4Varjo::TimestampLoadService timestampService(
+        runtimeArgc, runtimeArgv);
     if (!timestampService.start()) {
         std::cerr
             << "Timestamp service failed to start: "
@@ -214,7 +248,7 @@ int main(int argc, char** argv)
 
     int result = 1;
     try {
-        result = DualIC4VarjoBaseMain(argc, argv);
+        result = DualIC4VarjoBaseMain(runtimeArgc, runtimeArgv);
     } catch (const std::exception& exception) {
         std::cerr << "Unhandled application exception: "
                   << exception.what() << '\n';
