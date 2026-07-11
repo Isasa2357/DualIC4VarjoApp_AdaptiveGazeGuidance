@@ -1,4 +1,5 @@
 #include "ImuLoadServiceHook.hpp"
+#include "ExperimentOutput.hpp"
 
 #include <VarjoToolkit/Services/IMU/VarjoIMUService.hpp>
 
@@ -32,32 +33,17 @@ std::string WideToUtf8(const std::wstring& value)
     if (value.empty()) return {};
 
     const int required = WideCharToMultiByte(
-        CP_UTF8,
-        0,
-        value.data(),
-        static_cast<int>(value.size()),
-        nullptr,
-        0,
-        nullptr,
-        nullptr);
-    if (required <= 0) {
-        return "<wide-to-utf8 conversion failed>";
-    }
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+        nullptr, 0, nullptr, nullptr);
+    if (required <= 0) return "<wide-to-utf8 conversion failed>";
 
     std::string result(static_cast<std::size_t>(required), '\0');
     const int converted = WideCharToMultiByte(
-        CP_UTF8,
-        0,
-        value.data(),
-        static_cast<int>(value.size()),
-        result.data(),
-        required,
-        nullptr,
-        nullptr);
-    if (converted != required) {
-        return "<wide-to-utf8 conversion failed>";
-    }
-    return result;
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+        result.data(), required, nullptr, nullptr);
+    return converted == required
+        ? result
+        : std::string("<wide-to-utf8 conversion failed>");
 }
 
 std::string FindArgumentValue(
@@ -91,6 +77,10 @@ std::string SanitizeFilename(std::string value)
 
 std::filesystem::path ResolveOutputPath(int argc, char** argv)
 {
+    if (const auto active = ActiveExperimentOutputLayout()) {
+        return active->directory / "imu.csv";
+    }
+
     const std::filesystem::path baseDirectory =
         FindArgumentValue(argc, argv, "--dir", "logs");
     const std::string project = SanitizeFilename(
@@ -103,14 +93,11 @@ std::filesystem::path ResolveOutputPath(int argc, char** argv)
 bool EnsureStarted(
     const std::shared_ptr<varjo_Session>& session) noexcept
 {
-    if (gServiceRaw.load(std::memory_order_acquire)) {
-        return true;
-    }
+    if (gServiceRaw.load(std::memory_order_acquire)) return true;
 
     bool expected = false;
     if (!gStartAttempted.compare_exchange_strong(
-            expected,
-            true,
+            expected, true,
             std::memory_order_acq_rel,
             std::memory_order_acquire)) {
         return false;
@@ -136,9 +123,7 @@ bool EnsureStarted(
         gServiceRaw.store(gService.get(), std::memory_order_release);
         std::cout
             << "[IMU] service started from renderer FrameInfo snapshots\n"
-            << "[IMU] CSV: "
-            << gOutputPath.string()
-            << '\n';
+            << "[IMU] CSV: " << gOutputPath.string() << '\n';
         return true;
     } catch (const std::exception& exception) {
         std::lock_guard<std::mutex> lock(gStateMutex);
@@ -201,22 +186,11 @@ void ImuLoadServiceHook::stop() noexcept
         service = std::move(gService);
     }
     if (service) {
-        try {
-            service->stop();
-        } catch (...) {
-        }
-        gFinalReceived.store(
-            service->receivedSampleCount(),
-            std::memory_order_release);
-        gFinalProcessed.store(
-            service->processedSampleCount(),
-            std::memory_order_release);
-        gFinalWritten.store(
-            service->writtenSampleCount(),
-            std::memory_order_release);
-        gFinalDropped.store(
-            service->droppedSampleCount(),
-            std::memory_order_release);
+        try { service->stop(); } catch (...) {}
+        gFinalReceived.store(service->receivedSampleCount(), std::memory_order_release);
+        gFinalProcessed.store(service->processedSampleCount(), std::memory_order_release);
+        gFinalWritten.store(service->writtenSampleCount(), std::memory_order_release);
+        gFinalDropped.store(service->droppedSampleCount(), std::memory_order_release);
     }
 }
 
@@ -234,38 +208,26 @@ std::string ImuLoadServiceHook::lastError()
 
 std::uint64_t ImuLoadServiceHook::receivedCount() noexcept
 {
-    VarjoIMUService* service =
-        gServiceRaw.load(std::memory_order_acquire);
-    return service
-        ? service->receivedSampleCount()
-        : gFinalReceived.load(std::memory_order_acquire);
+    VarjoIMUService* service = gServiceRaw.load(std::memory_order_acquire);
+    return service ? service->receivedSampleCount() : gFinalReceived.load(std::memory_order_acquire);
 }
 
 std::uint64_t ImuLoadServiceHook::processedCount() noexcept
 {
-    VarjoIMUService* service =
-        gServiceRaw.load(std::memory_order_acquire);
-    return service
-        ? service->processedSampleCount()
-        : gFinalProcessed.load(std::memory_order_acquire);
+    VarjoIMUService* service = gServiceRaw.load(std::memory_order_acquire);
+    return service ? service->processedSampleCount() : gFinalProcessed.load(std::memory_order_acquire);
 }
 
 std::uint64_t ImuLoadServiceHook::writtenCount() noexcept
 {
-    VarjoIMUService* service =
-        gServiceRaw.load(std::memory_order_acquire);
-    return service
-        ? service->writtenSampleCount()
-        : gFinalWritten.load(std::memory_order_acquire);
+    VarjoIMUService* service = gServiceRaw.load(std::memory_order_acquire);
+    return service ? service->writtenSampleCount() : gFinalWritten.load(std::memory_order_acquire);
 }
 
 std::uint64_t ImuLoadServiceHook::droppedCount() noexcept
 {
-    VarjoIMUService* service =
-        gServiceRaw.load(std::memory_order_acquire);
-    return service
-        ? service->droppedSampleCount()
-        : gFinalDropped.load(std::memory_order_acquire);
+    VarjoIMUService* service = gServiceRaw.load(std::memory_order_acquire);
+    return service ? service->droppedSampleCount() : gFinalDropped.load(std::memory_order_acquire);
 }
 
 } // namespace DualIC4Varjo
