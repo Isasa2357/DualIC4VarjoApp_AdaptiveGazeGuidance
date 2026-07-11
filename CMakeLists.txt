@@ -45,7 +45,7 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.21.0
+    VERSION 0.21.1
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -326,6 +326,10 @@ target_link_libraries(DualIC4VarjoApp PRIVATE
 if(MSVC)
     target_compile_options(DualIC4VarjoApp PRIVATE
         /W4 /permissive- /utf-8 /EHsc)
+    set_source_files_properties(
+        src/RawStereoNvencRecorder.cpp
+        PROPERTIES
+            COMPILE_OPTIONS "/UWIN32_LEAN_AND_MEAN;/UNOMINMAX;/wd4005")
 endif()
 
 if(COMMAND varjoxr_copy_dxc_runtime)
