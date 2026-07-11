@@ -14,6 +14,8 @@
 namespace DualIC4Varjo {
 namespace {
 
+constexpr auto kTimestampSamplePeriod = std::chrono::milliseconds(100);
+
 std::string FindArgumentValue(
     int argc,
     char** argv,
@@ -120,7 +122,7 @@ bool TimestampLoadService::start()
         worker_ = std::thread(&TimestampLoadService::workerMain, this);
 
         std::cout
-            << "[TIMESTAMP] service started at 100 Hz\n"
+            << "[TIMESTAMP] service started at 10 Hz\n"
             << "[TIMESTAMP] CSV: "
             << outputPath_.string()
             << '\n';
@@ -179,7 +181,7 @@ void TimestampLoadService::workerMain() noexcept
     auto nextSample = clock::now();
     try {
         while (!stopRequested_.load(std::memory_order_acquire)) {
-            nextSample += std::chrono::milliseconds(10);
+            nextSample += kTimestampSamplePeriod;
 
             const auto beginSystem = system_clock::now();
             const auto beginSteady = clock::now();
@@ -225,7 +227,7 @@ void TimestampLoadService::workerMain() noexcept
 
             std::this_thread::sleep_until(nextSample);
             const auto now = clock::now();
-            if (now > nextSample + std::chrono::milliseconds(100)) {
+            if (now > nextSample + kTimestampSamplePeriod) {
                 nextSample = now;
             }
         }
