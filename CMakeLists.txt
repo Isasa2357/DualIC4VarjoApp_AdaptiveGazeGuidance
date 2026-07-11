@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.18.0
+    VERSION 0.19.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -204,8 +204,11 @@ add_executable(DualIC4VarjoApp
     src/ImuLoadServiceHook.hpp
     src/KeyInputService.cpp
     src/KeyInputService.hpp
+    src/RealtimeCalibrationBootstrap.cpp
+    src/RealtimeCalibrationBootstrap.hpp
     src/RenderedFrameMetadataLogger.cpp
     src/RenderedFrameMetadataLogger.hpp
+    src/StereoCalibrationSave.cpp
     src/StereoCalibrationSupport.cpp
     src/StereoCalibrationSupport.hpp
     src/StereoDisplayTextureRing.cpp
