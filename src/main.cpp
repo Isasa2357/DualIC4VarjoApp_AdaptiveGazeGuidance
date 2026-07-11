@@ -7,12 +7,11 @@
 #include "StereoCalibrationSupport.hpp"
 #include "StereoDisplayTextureRing.hpp"
 #include "TimeUtil.hpp"
-#include "VarjoServiceLogging.hpp"
 
 #include <IC4Ext/IC4Ext.hpp>
 #include <VarjoToolkit/Core/VarjoSession.hpp>
-#include <VarjoXR/VarjoXR.hpp>
 #include <VarjoXR/Backends/D3D12/D3D12Backend.hpp>
+#include <VarjoXR/VarjoXR.hpp>
 
 #include <D3D12Helper/D3D12Core/D3D12Core.hpp>
 #include <ThreadKit/Queues/QueueCommon.hpp>
@@ -306,8 +305,6 @@ VarjoXR::XRSpaceAsyncRenderState CapturePlaneProcessingConstants(
         auto& processing = plane.material(eye).processing;
         if (!processing.enabled) continue;
 
-        // Asynchronous constant changes must trigger compute processing even
-        // when the camera texture object has not changed in the current frame.
         processing.timing = VarjoXR::ProcessingTiming::BeforeRenderEachFrame;
 
         VarjoXR::XRPlaneProcessingConstantsUpdate update;
@@ -368,9 +365,9 @@ int main(int argc, char** argv)
     std::cout << "DualIC4VarjoApp\n"
               << "  IC4Ext: v1.0.1\n"
               << "  VarjoXR: v0.3.0 asynchronous XRSpace rendering\n"
-              << "  VarjoToolkit: v0.5.0 external-frame services\n"
               << "  D3D12Helper: v1.13.0\n"
               << "  Backend: D3D12\n"
+              << "  Varjo services: disabled/removed\n"
               << "  Main thread id: " << GetCurrentThreadId() << '\n'
               << "  Calibration: "
               << (config.calibration.enabled
@@ -711,12 +708,8 @@ int main(int argc, char** argv)
             activeCalibration.revision = finalSnapshot->revision;
         }
 
-        // Publish the current HLSL constants as an atomic left/right batch. New
-        // time-varying states can be published from the main loop later without
-        // touching Plane state directly.
-        std::uint64_t hlslStateRevision = 1;
         space.publishAsyncRenderState(
-            CapturePlaneProcessingConstants(plane, hlslStateRevision, 0));
+            CapturePlaneProcessingConstants(plane, 1, 0));
 
         const auto experimentOutput =
             DualIC4Varjo::CreateExperimentOutputLayout(
@@ -733,22 +726,14 @@ int main(int argc, char** argv)
                       << experimentOutput.resolvedProjectName << '\n';
         }
 
-        DualIC4Varjo::VarjoServiceLogging serviceLogging(
-            session->shared(),
-            experimentOutput.directory);
-        std::string serviceError;
-        if (!serviceLogging.start(serviceError)) {
-            throw std::runtime_error(serviceError);
-        }
         if (!logger.start(config.metadataCsv)) {
             throw std::runtime_error(logger.lastError());
         }
 
         std::cout
-            << "Experiment rendering and Varjo service logging started.\n"
+            << "Experiment rendering started without Varjo services.\n"
             << "  Render owner        : dedicated XRSpace render thread\n"
             << "  Frame sync owner    : VarjoXR rendering backend only\n"
-            << "  Eye/IMU FrameInfo   : main polls XRSpace double buffer\n"
             << "  HLSL constants      : main -> render double buffer\n"
             << "  Arrow Left/Right : move Plane left/right by 0.01 m\n"
             << "  Arrow Up/Down    : move Plane up/down by 0.01 m\n"
@@ -822,9 +807,6 @@ int main(int argc, char** argv)
         };
 
         std::exception_ptr pendingError;
-        std::int64_t lastSubmittedFrameNumber = -1;
-        std::uint64_t skippedFrameInfoCount = 0;
-
         try {
             space.startRenderThread(std::move(renderThreadDesc));
 
@@ -847,23 +829,6 @@ int main(int argc, char** argv)
                         "XRSpace render thread stopped unexpectedly");
                 }
 
-                if (const auto frameInfo = space.latestFrameInfoSnapshot();
-                    frameInfo && frameInfo->valid &&
-                    frameInfo->frameNumber != lastSubmittedFrameNumber) {
-                    if (lastSubmittedFrameNumber >= 0 &&
-                        frameInfo->frameNumber > lastSubmittedFrameNumber + 1) {
-                        skippedFrameInfoCount += static_cast<std::uint64_t>(
-                            frameInfo->frameNumber - lastSubmittedFrameNumber - 1);
-                    }
-
-                    if (!serviceLogging.submitFrameInfo(*frameInfo)) {
-                        throw std::runtime_error(
-                            "Varjo services rejected the renderer FrameInfo snapshot");
-                    }
-                    lastSubmittedFrameNumber = frameInfo->frameNumber;
-                }
-
-                serviceLogging.pump();
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         } catch (...) {
@@ -879,7 +844,6 @@ int main(int argc, char** argv)
             if (!pendingError) pendingError = std::current_exception();
         }
 
-        serviceLogging.stop();
         logger.stop();
         stopThreads();
         displayRing.waitIdle();
@@ -888,7 +852,6 @@ int main(int argc, char** argv)
             std::rethrow_exception(pendingError);
         }
 
-        const auto serviceStats = serviceLogging.summary();
         const auto leftStats = leftCamera.stats();
         const auto rightStats = rightCamera.stats();
         const auto syncStats = syncThread.stats();
@@ -898,24 +861,10 @@ int main(int argc, char** argv)
                   << "  rendered frame CSV: "
                   << config.metadataCsv.string() << '\n'
                   << "  render frames: " << renderRowIndex << '\n'
-                  << "  FrameInfo skipped by main latest-only polling: "
-                  << skippedFrameInfoCount << '\n'
                   << "  left camera frames: " << leftStats.readFrames << '\n'
                   << "  right camera frames: " << rightStats.readFrames << '\n'
                   << "  synchronized sets: " << syncStats.emittedSets << '\n'
-                  << "  sync drops: " << syncStats.droppedFrames << '\n'
-                  << "  gaze samples: " << serviceStats.gazeReceived
-                  << " dropped from app queue=" << serviceStats.gazeDropped
-                  << " frameInfo submitted=" << serviceStats.gazeFrameInfoSubmitted
-                  << " history dropped=" << serviceStats.gazeFrameInfoDropped << '\n'
-                  << "  IMU received/processed/written/dropped: "
-                  << serviceStats.imuReceived << " / "
-                  << serviceStats.imuProcessed << " / "
-                  << serviceStats.imuWritten << " / "
-                  << serviceStats.imuDropped << '\n'
-                  << "  VST frames L/R: " << serviceStats.vstLeftFrames
-                  << " / " << serviceStats.vstRightFrames
-                  << " write failures=" << serviceStats.vstWriteFailures << '\n';
+                  << "  sync drops: " << syncStats.droppedFrames << '\n';
         return 0;
     } catch (const std::exception& e) {
         gStopRequested.store(true);
