@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.7.0
+    VERSION 0.8.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -20,6 +20,7 @@ set(DUAL_IC4_VARJO_VARJOXR_TAG
 set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG
     "8512ba418dc0e63c67b6e0518ef84dc2b53fb39d")
 set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
+set(DUAL_IC4_VARJO_IMGUI_TAG "v1.92.5")
 
 # -----------------------------------------------------------------------------
 # IC Imaging Control 4 SDK discovery
@@ -31,17 +32,21 @@ function(dual_ic4_varjo_normalize_ic4_root candidate out_root)
         set(${out_root} "" PARENT_SCOPE)
         return()
     endif()
+
     file(TO_CMAKE_PATH "${candidate}" normalized)
     string(REGEX REPLACE "/+$" "" normalized "${normalized}")
+
     if(EXISTS "${normalized}/include/ic4/ic4.h")
         set(${out_root} "${normalized}" PARENT_SCOPE)
         return()
     endif()
+
     if(EXISTS "${normalized}/ic4/ic4.h")
         get_filename_component(parent "${normalized}" DIRECTORY)
         set(${out_root} "${parent}" PARENT_SCOPE)
         return()
     endif()
+
     set(${out_root} "" PARENT_SCOPE)
 endfunction()
 
@@ -84,11 +89,13 @@ if(NOT _dual_ic4_resolved_sdk_root)
         "Checked candidates:\n  - ${_dual_ic4_candidate_text}\n"
         "Configure with -DIC4_SDK_ROOT=<IC Imaging Control 4 root>.")
 endif()
+
 if(NOT EXISTS "${_dual_ic4_resolved_sdk_root}/lib/x64/ic4core.lib")
     message(FATAL_ERROR
         "IC4 headers were found, but ic4core.lib is missing: "
         "${_dual_ic4_resolved_sdk_root}/lib/x64/ic4core.lib")
 endif()
+
 set(IC4_SDK_ROOT "${_dual_ic4_resolved_sdk_root}"
     CACHE PATH "Path to the IC Imaging Control 4 SDK root" FORCE)
 message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
@@ -148,6 +155,51 @@ FetchContent_Declare(
     GIT_SHALLOW    FALSE)
 FetchContent_MakeAvailable(IC4Ext)
 
+# -----------------------------------------------------------------------------
+# Dear ImGui Win32 + DirectX 12 backends
+# -----------------------------------------------------------------------------
+FetchContent_Declare(
+    DearImGui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        ${DUAL_IC4_VARJO_IMGUI_TAG}
+    GIT_SHALLOW    TRUE)
+FetchContent_GetProperties(DearImGui)
+if(NOT dearimgui_POPULATED)
+    FetchContent_Populate(DearImGui)
+endif()
+
+add_library(DualIC4VarjoImGui STATIC
+    "${dearimgui_SOURCE_DIR}/imgui.cpp"
+    "${dearimgui_SOURCE_DIR}/imgui_draw.cpp"
+    "${dearimgui_SOURCE_DIR}/imgui_tables.cpp"
+    "${dearimgui_SOURCE_DIR}/imgui_widgets.cpp"
+    "${dearimgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp"
+    "${dearimgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp")
+add_library(DualIC4Varjo::ImGui ALIAS DualIC4VarjoImGui)
+
+target_compile_features(DualIC4VarjoImGui PUBLIC cxx_std_17)
+target_include_directories(DualIC4VarjoImGui
+    PUBLIC
+        "${dearimgui_SOURCE_DIR}"
+        "${dearimgui_SOURCE_DIR}/backends")
+target_compile_definitions(DualIC4VarjoImGui
+    PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX)
+target_link_libraries(DualIC4VarjoImGui
+    PUBLIC
+        d3d12
+        dxgi
+        dxguid
+        imm32)
+if(MSVC)
+    target_compile_options(DualIC4VarjoImGui PRIVATE
+        /W4 /permissive- /utf-8 /EHsc)
+endif()
+
+# -----------------------------------------------------------------------------
+# Application
+# -----------------------------------------------------------------------------
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
@@ -156,6 +208,8 @@ add_executable(DualIC4VarjoApp
     src/DisplayTextureRing.hpp
     src/ExperimentOutput.cpp
     src/ExperimentOutput.hpp
+    src/ImGuiStereoPreview.cpp
+    src/ImGuiStereoPreview.hpp
     src/RenderedFrameMetadataLogger.cpp
     src/RenderedFrameMetadataLogger.hpp
     src/TimeUtil.cpp
@@ -168,7 +222,8 @@ target_compile_definitions(DualIC4VarjoApp PRIVATE
 target_link_libraries(DualIC4VarjoApp PRIVATE
     IC4Ext::IC4Ext
     VarjoXR::VarjoXR
-    VarjoToolkit::VarjoToolkit)
+    VarjoToolkit::VarjoToolkit
+    DualIC4Varjo::ImGui)
 
 if(MSVC)
     target_compile_options(DualIC4VarjoApp PRIVATE
