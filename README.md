@@ -12,7 +12,7 @@ IC4Extで2台のIC4カメラをD3D12テクスチャとして取得し、`D3D12Fr
 ## 依存バージョン
 
 - IC4Ext: `v1.0.1`
-- VarjoXR: `v0.3.0`相当、commit `279886fa2132ae54695d9c6a6fc7bad5a2e4fe6a`
+- VarjoXR: `v0.3.0`相当、commit `3d28a950b54edeafa3e7b595b78cc3b47cdc2ef5`
 - VarjoToolkit: `v0.5.0`相当、commit `8512ba418dc0e63c67b6e0518ef84dc2b53fb39d`
 - D3D12Helper: `v1.13.0`
 - VarjoDualCameraApplicationsのキャリブレーション実装: commit `8470b8e34b0bdd50546cd2215c8969b0512c3eaa`
