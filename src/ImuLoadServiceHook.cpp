@@ -2,6 +2,8 @@
 
 #include <VarjoToolkit/Services/IMU/VarjoIMUService.hpp>
 
+#include <Windows.h>
+
 #include <atomic>
 #include <exception>
 #include <filesystem>
@@ -24,6 +26,39 @@ std::atomic<std::uint64_t> gFinalReceived{0};
 std::atomic<std::uint64_t> gFinalProcessed{0};
 std::atomic<std::uint64_t> gFinalWritten{0};
 std::atomic<std::uint64_t> gFinalDropped{0};
+
+std::string WideToUtf8(const std::wstring& value)
+{
+    if (value.empty()) return {};
+
+    const int required = WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        value.data(),
+        static_cast<int>(value.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (required <= 0) {
+        return "<wide-to-utf8 conversion failed>";
+    }
+
+    std::string result(static_cast<std::size_t>(required), '\0');
+    const int converted = WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        value.data(),
+        static_cast<int>(value.size()),
+        result.data(),
+        required,
+        nullptr,
+        nullptr);
+    if (converted != required) {
+        return "<wide-to-utf8 conversion failed>";
+    }
+    return result;
+}
 
 std::string FindArgumentValue(
     int argc,
@@ -93,8 +128,7 @@ bool EnsureStarted(
             gOutputPath.wstring(),
             180);
         if (!gService->start()) {
-            const std::wstring error = gService->lastError();
-            gLastError.assign(error.begin(), error.end());
+            gLastError = WideToUtf8(gService->lastError());
             gService.reset();
             return false;
         }
