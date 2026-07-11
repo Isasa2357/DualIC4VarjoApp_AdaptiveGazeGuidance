@@ -49,6 +49,12 @@ struct AppConfig {
     VarjoXR::PlacementMode placementMode = VarjoXR::PlacementMode::HeadRelative;
 
     std::size_t displayRingSize = 4;
+
+    bool pcPreviewEnabled = true;
+    int pcPreviewWidth = 1600;
+    int pcPreviewHeight = 800;
+    bool pcPreviewVsync = true;
+
     bool enableD3D12DebugLayer = false;
     double maxRuntimeSeconds = 0.0;
 
