@@ -26,24 +26,13 @@ void ValidateProjectName(const std::string& projectName)
     }
 }
 
-std::filesystem::path ResolveMetadataFilename(
-    const std::filesystem::path& requested)
-{
-    const std::filesystem::path filename = requested.empty()
-        ? std::filesystem::path("rendered_frames.csv")
-        : requested.filename();
-
-    if (filename.empty() || filename == "." || filename == "..") {
-        throw std::invalid_argument("--metadata-csv must contain a valid filename");
-    }
-    return filename;
-}
-
 ExperimentOutputLayout AllocateExperimentOutputLayout(
     const std::filesystem::path& baseDirectory,
     const std::string& projectName,
     const std::filesystem::path& requestedRenderedFramesCsv)
 {
+    static_cast<void>(requestedRenderedFramesCsv);
+
     ValidateProjectName(projectName);
     if (baseDirectory.empty()) {
         throw std::invalid_argument("--dir must not be empty");
@@ -80,7 +69,7 @@ ExperimentOutputLayout AllocateExperimentOutputLayout(
             result.directory = candidate;
             result.resolvedProjectName = resolvedName;
             result.renderedFramesCsv =
-                candidate / ResolveMetadataFilename(requestedRenderedFramesCsv);
+                candidate / (resolvedName + "_rendered_frames.csv");
             return result;
         }
 
