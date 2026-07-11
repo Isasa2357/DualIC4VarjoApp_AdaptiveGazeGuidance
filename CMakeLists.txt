@@ -45,7 +45,7 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.21.1
+    VERSION 0.21.2
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -355,12 +355,15 @@ if(_dual_ic4_d3d12helper_shader_root)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${_dual_ic4_d3d12helper_shader_root}"
             "$<TARGET_FILE_DIR:DualIC4VarjoApp>/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${_dual_ic4_d3d12helper_shader_root}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
         COMMENT "Copying D3D12Helper processing shaders for NVENC recording"
         VERBATIM)
 else()
     message(WARNING
         "D3D12Helper shader directory was not found. The NVENC writer requires "
-        "shaders/D3D12Processing next to DualIC4VarjoApp.exe.")
+        "shaders/D3D12Processing next to DualIC4VarjoApp.exe or in the working directory.")
 endif()
 
 add_custom_command(TARGET DualIC4VarjoApp POST_BUILD
