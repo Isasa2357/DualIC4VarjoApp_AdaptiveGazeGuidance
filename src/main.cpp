@@ -340,8 +340,8 @@ int main(int argc, char** argv)
 
     std::cout << "DualIC4VarjoApp\n"
               << "  IC4Ext: v1.0.1\n"
-              << "  VarjoXR: v0.1.0\n"
-              << "  VarjoToolkit: v0.4.0\n"
+              << "  VarjoXR: v0.2.0 external-frame snapshot\n"
+              << "  VarjoToolkit: v0.5.0 external-frame services\n"
               << "  D3D12Helper: v1.13.0\n"
               << "  Backend: D3D12\n"
               << "  Calibration: "
@@ -711,6 +711,8 @@ int main(int argc, char** argv)
 
         std::cout
             << "Experiment rendering and Varjo service logging started.\n"
+            << "  Frame sync owner    : VarjoXR rendering backend only\n"
+            << "  Eye/IMU FrameInfo   : XRSpace snapshot after each successful update\n"
             << "  Arrow Left/Right : move Plane left/right by 0.01 m\n"
             << "  Arrow Up/Down    : move Plane up/down by 0.01 m\n"
             << "  Shift + Up       : move Plane farther by 0.01 m\n"
@@ -745,8 +747,6 @@ int main(int argc, char** argv)
                 newFrameFromQueue = true;
             }
 
-            serviceLogging.pump();
-
             const PlaneKeyboardUpdate planeUpdate =
                 UpdatePlaneFromKeyboard(plane, planeKeys);
             const auto submitSteady = std::chrono::steady_clock::now();
@@ -754,6 +754,15 @@ int main(int argc, char** argv)
             bool submitOk = false;
             try {
                 space.update();
+
+                const VarjoFrameInfoSnapshot frameInfo =
+                    space.frameInfoSnapshot();
+                if (!serviceLogging.submitFrameInfo(frameInfo)) {
+                    throw std::runtime_error(
+                        "Varjo services rejected the renderer FrameInfo snapshot");
+                }
+                serviceLogging.pump();
+
                 submitOk = true;
                 displayRing.markRendered(activeSlot);
             } catch (...) {
@@ -824,8 +833,14 @@ int main(int argc, char** argv)
                   << "  synchronized sets: " << syncStats.emittedSets << '\n'
                   << "  sync drops: " << syncStats.droppedFrames << '\n'
                   << "  gaze samples: " << serviceStats.gazeReceived
-                  << " dropped from app queue=" << serviceStats.gazeDropped << '\n'
-                  << "  IMU rows: " << serviceStats.imuRows << '\n'
+                  << " dropped from app queue=" << serviceStats.gazeDropped
+                  << " frameInfo submitted=" << serviceStats.gazeFrameInfoSubmitted
+                  << " history dropped=" << serviceStats.gazeFrameInfoDropped << '\n'
+                  << "  IMU received/processed/written/dropped: "
+                  << serviceStats.imuReceived << " / "
+                  << serviceStats.imuProcessed << " / "
+                  << serviceStats.imuWritten << " / "
+                  << serviceStats.imuDropped << '\n'
                   << "  VST frames L/R: " << serviceStats.vstLeftFrames
                   << " / " << serviceStats.vstRightFrames
                   << " write failures=" << serviceStats.vstWriteFailures << '\n';
