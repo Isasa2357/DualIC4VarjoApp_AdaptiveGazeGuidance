@@ -44,9 +44,12 @@ std::string ClockMapper::localIso8601(std::int64_t unixMicroseconds) const
     return stream.str();
 }
 
-std::int64_t SignedDifference(std::uint64_t lhs, std::uint64_t rhs) noexcept
+std::int64_t SignedDifferenceImpl(
+    std::uint64_t lhs,
+    std::uint64_t rhs) noexcept
 {
-    constexpr auto maxSigned = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    constexpr auto maxSigned =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
     if (lhs >= rhs) {
         return static_cast<std::int64_t>(std::min(lhs - rhs, maxSigned));
     }
