@@ -1,4 +1,17 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "CoordinatedCameraCaptureThread.hpp"
+
+// ApplicationMainRealtimeCalibration.cpp defines these macros itself. Undefine
+// them here to avoid C4005 while keeping Windows headers already parsed with
+// NOMINMAX enabled.
+#undef WIN32_LEAN_AND_MEAN
+#undef NOMINMAX
 
 // ApplicationMainRealtimeCalibration.cpp uses IC4Ext::D3D12CameraCaptureThread.
 // Replace only that token in this translation unit with the application-local
