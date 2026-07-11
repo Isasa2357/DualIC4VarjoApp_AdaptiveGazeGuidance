@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.19.0
+    VERSION 0.20.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -149,6 +149,9 @@ FetchContent_Declare(
     GIT_SHALLOW    FALSE)
 FetchContent_MakeAvailable(IC4Ext)
 
+find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d highgui)
+message(STATUS "DualIC4VarjoApp: OpenCV version = ${OpenCV_VERSION}")
+
 FetchContent_Declare(
     DearImGui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -191,7 +194,9 @@ endif()
 add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
-    src/ApplicationMainTimestampImuVstEyeTracker.cpp
+    src/ApplicationMainRealtimeCalibration.cpp
+    src/CheckerboardStereoCalibration.cpp
+    src/CheckerboardStereoCalibration.hpp
     src/ExperimentOutput.cpp
     src/ExperimentOutput.hpp
     src/EyeTrackerLoadServiceHook.cpp
@@ -204,8 +209,6 @@ add_executable(DualIC4VarjoApp
     src/ImuLoadServiceHook.hpp
     src/KeyInputService.cpp
     src/KeyInputService.hpp
-    src/RealtimeCalibrationBootstrap.cpp
-    src/RealtimeCalibrationBootstrap.hpp
     src/RenderedFrameMetadataLogger.cpp
     src/RenderedFrameMetadataLogger.hpp
     src/StereoCalibrationSave.cpp
@@ -221,12 +224,14 @@ add_executable(DualIC4VarjoApp
     src/VstLoadServiceHook.hpp)
 
 target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
+target_include_directories(DualIC4VarjoApp PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(DualIC4VarjoApp PRIVATE
     IC4Ext::IC4Ext
     VarjoXR::VarjoXR
     VarjoToolkit::VarjoToolkit
     DualIC4Varjo::ImGui
-    nlohmann_json::nlohmann_json)
+    nlohmann_json::nlohmann_json
+    ${OpenCV_LIBS})
 
 if(MSVC)
     target_compile_options(DualIC4VarjoApp PRIVATE
