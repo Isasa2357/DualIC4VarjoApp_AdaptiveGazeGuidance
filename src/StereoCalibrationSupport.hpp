@@ -58,6 +58,10 @@ struct StereoCalibrationDocument {
 StereoCalibrationDocument LoadStereoCalibrationJson(
     const std::filesystem::path& path);
 
+void SaveStereoCalibrationJson(
+    const std::filesystem::path& path,
+    const StereoCalibrationDocument& document);
+
 void ValidateCalibrationInputGeometry(
     const StereoCalibrationDocument& document,
     std::uint32_t inputWidth,
