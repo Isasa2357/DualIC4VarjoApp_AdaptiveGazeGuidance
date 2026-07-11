@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.8.0
+    VERSION 0.9.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -204,14 +204,16 @@ add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
     src/ApplicationMain.cpp
-    src/DisplayTextureRing.cpp
-    src/DisplayTextureRing.hpp
     src/ExperimentOutput.cpp
     src/ExperimentOutput.hpp
     src/ImGuiStereoPreview.cpp
     src/ImGuiStereoPreview.hpp
     src/RenderedFrameMetadataLogger.cpp
     src/RenderedFrameMetadataLogger.hpp
+    src/StereoCalibrationSupport.cpp
+    src/StereoCalibrationSupport.hpp
+    src/StereoDisplayTextureRing.cpp
+    src/StereoDisplayTextureRing.hpp
     src/TimeUtil.cpp
     src/TimeUtil.hpp)
 
@@ -223,7 +225,8 @@ target_link_libraries(DualIC4VarjoApp PRIVATE
     IC4Ext::IC4Ext
     VarjoXR::VarjoXR
     VarjoToolkit::VarjoToolkit
-    DualIC4Varjo::ImGui)
+    DualIC4Varjo::ImGui
+    nlohmann_json::nlohmann_json)
 
 if(MSVC)
     target_compile_options(DualIC4VarjoApp PRIVATE
