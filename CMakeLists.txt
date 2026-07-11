@@ -23,7 +23,7 @@ endif()
 set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg target triplet")
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.4.0
+    VERSION 0.5.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -34,7 +34,7 @@ include(FetchContent)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Do not update populated dependencies automatically" FORCE)
 
 set(DUAL_IC4_VARJO_IC4EXT_TAG "v1.0.1")
-set(DUAL_IC4_VARJO_VARJOXR_TAG "8cdd42dcbd63ff69026255a427ffa2ca52d49797")
+set(DUAL_IC4_VARJO_VARJOXR_TAG "279886fa2132ae54695d9c6a6fc7bad5a2e4fe6a")
 set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG "8512ba418dc0e63c67b6e0518ef84dc2b53fb39d")
 set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
 set(DUAL_IC4_VARJO_CALIBRATION_COMMIT "8470b8e34b0bdd50546cd2215c8969b0512c3eaa")
@@ -111,9 +111,9 @@ set(IC4_SDK_ROOT "${_dual_ic4_resolved_sdk_root}" CACHE PATH "Path to the IC Ima
 message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
 
 # -----------------------------------------------------------------------------
-# Resolve the tested external-frame VarjoToolkit before VarjoXR so both targets
-# use the same implementation. Eye tracking and IMU receive the frame snapshot
-# captured by VarjoXR's single rendering synchronization owner.
+# Resolve the external-frame VarjoToolkit before VarjoXR so both targets use the
+# same implementation. VarjoXR 0.3.0 owns the dedicated render thread and the
+# FrameInfo / HLSL-constant double buffers.
 # -----------------------------------------------------------------------------
 if(VARJOXR_VARJO_SDK_ROOT)
     set(VARJO_SDK_ROOT "${VARJOXR_VARJO_SDK_ROOT}" CACHE PATH "Path to Varjo Native SDK" FORCE)
