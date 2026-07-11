@@ -23,7 +23,7 @@ endif()
 set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg target triplet")
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.6.1
+    VERSION 0.6.2
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -33,7 +33,7 @@ endif()
 include(FetchContent)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Do not update populated dependencies automatically" FORCE)
 
-set(DUAL_IC4_VARJO_IC4EXT_TAG "3c533ce75341fc25a305c84709aec8e10afcff15")
+set(DUAL_IC4_VARJO_IC4EXT_TAG "50db99c3e18a08af683ef69352cc52ffb55a7a2d")
 set(DUAL_IC4_VARJO_VARJOXR_TAG "3d28a950b54edeafa3e7b595b78cc3b47cdc2ef5")
 set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG "8512ba418dc0e63c67b6e0518ef84dc2b53fb39d")
 set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
@@ -113,8 +113,8 @@ message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
 # -----------------------------------------------------------------------------
 # Resolve VarjoToolkit before VarjoXR so both targets use the same Varjo session
 # implementation. VarjoXR owns the dedicated render thread and the FrameInfo /
-# HLSL-constant double buffers. The pinned IC4Ext revision adds sampled copied
-# outputs so live calibration does not copy every camera frame.
+# HLSL-constant double buffers. The pinned IC4Ext revision aligns sampled copied
+# output windows across camera threads so live calibration receives stereo pairs.
 # -----------------------------------------------------------------------------
 if(VARJOXR_VARJO_SDK_ROOT)
     set(VARJO_SDK_ROOT "${VARJOXR_VARJO_SDK_ROOT}" CACHE PATH "Path to Varjo Native SDK" FORCE)
@@ -205,8 +205,8 @@ target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
 target_compile_definitions(DualIC4VarjoApp PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
-    IC4EXT_DEFAULT_COPIED_OUTPUT_FRAME_STRIDE=16
-    IC4EXT_DEFAULT_COPIED_OUTPUT_FRAME_BURST=3)
+    IC4EXT_DEFAULT_COPIED_OUTPUT_FRAME_STRIDE=32
+    IC4EXT_DEFAULT_COPIED_OUTPUT_FRAME_BURST=8)
 target_link_libraries(DualIC4VarjoApp PRIVATE
     IC4Ext::IC4Ext
     VarjoXR::VarjoXR
