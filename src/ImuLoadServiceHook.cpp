@@ -18,6 +18,10 @@ std::filesystem::path gOutputPath;
 std::string gLastError;
 std::unique_ptr<VarjoIMUService> gService;
 std::atomic<VarjoIMUService*> gServiceRaw{nullptr};
+std::atomic<std::uint64_t> gFinalReceived{0};
+std::atomic<std::uint64_t> gFinalProcessed{0};
+std::atomic<std::uint64_t> gFinalWritten{0};
+std::atomic<std::uint64_t> gFinalDropped{0};
 
 std::string FindArgumentValue(
     int argc,
@@ -118,6 +122,10 @@ void ImuLoadServiceHook::configure(int argc, char** argv)
     std::lock_guard<std::mutex> lock(gStateMutex);
     gOutputPath = ResolveOutputPath(argc, argv);
     gLastError.clear();
+    gFinalReceived.store(0, std::memory_order_release);
+    gFinalProcessed.store(0, std::memory_order_release);
+    gFinalWritten.store(0, std::memory_order_release);
+    gFinalDropped.store(0, std::memory_order_release);
 }
 
 void ImuLoadServiceHook::submit(
@@ -155,6 +163,18 @@ void ImuLoadServiceHook::stop() noexcept
             service->stop();
         } catch (...) {
         }
+        gFinalReceived.store(
+            service->receivedSampleCount(),
+            std::memory_order_release);
+        gFinalProcessed.store(
+            service->processedSampleCount(),
+            std::memory_order_release);
+        gFinalWritten.store(
+            service->writtenSampleCount(),
+            std::memory_order_release);
+        gFinalDropped.store(
+            service->droppedSampleCount(),
+            std::memory_order_release);
     }
 }
 
@@ -174,28 +194,36 @@ std::uint64_t ImuLoadServiceHook::receivedCount() noexcept
 {
     VarjoIMUService* service =
         gServiceRaw.load(std::memory_order_acquire);
-    return service ? service->receivedSampleCount() : 0;
+    return service
+        ? service->receivedSampleCount()
+        : gFinalReceived.load(std::memory_order_acquire);
 }
 
 std::uint64_t ImuLoadServiceHook::processedCount() noexcept
 {
     VarjoIMUService* service =
         gServiceRaw.load(std::memory_order_acquire);
-    return service ? service->processedSampleCount() : 0;
+    return service
+        ? service->processedSampleCount()
+        : gFinalProcessed.load(std::memory_order_acquire);
 }
 
 std::uint64_t ImuLoadServiceHook::writtenCount() noexcept
 {
     VarjoIMUService* service =
         gServiceRaw.load(std::memory_order_acquire);
-    return service ? service->writtenSampleCount() : 0;
+    return service
+        ? service->writtenSampleCount()
+        : gFinalWritten.load(std::memory_order_acquire);
 }
 
 std::uint64_t ImuLoadServiceHook::droppedCount() noexcept
 {
     VarjoIMUService* service =
         gServiceRaw.load(std::memory_order_acquire);
-    return service ? service->droppedSampleCount() : 0;
+    return service
+        ? service->droppedSampleCount()
+        : gFinalDropped.load(std::memory_order_acquire);
 }
 
 } // namespace DualIC4Varjo
