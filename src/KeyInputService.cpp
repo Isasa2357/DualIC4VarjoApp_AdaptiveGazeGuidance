@@ -10,6 +10,7 @@
 #include <ctime>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -17,7 +18,7 @@
 namespace DualIC4Varjo {
 namespace {
 
-constexpr auto kPollPeriod = std::chrono::milliseconds(2);
+constexpr auto kPollPeriod = std::chrono::milliseconds(5);
 
 bool IsKeyboardVirtualKey(int virtualKey) noexcept
 {
@@ -28,6 +29,9 @@ bool IsKeyboardVirtualKey(int virtualKey) noexcept
     case VK_MBUTTON:
     case VK_XBUTTON1:
     case VK_XBUTTON2:
+    case VK_SHIFT:
+    case VK_CONTROL:
+    case VK_MENU:
         return false;
     default:
         return virtualKey >= VK_BACK && virtualKey <= 0xFE;
@@ -51,9 +55,6 @@ std::string CsvEscape(const std::string& value)
 std::string VirtualKeyName(int virtualKey)
 {
     switch (virtualKey) {
-    case VK_SHIFT: return "SHIFT";
-    case VK_CONTROL: return "CTRL";
-    case VK_MENU: return "ALT";
     case VK_LSHIFT: return "LEFT_SHIFT";
     case VK_RSHIFT: return "RIGHT_SHIFT";
     case VK_LCONTROL: return "LEFT_CTRL";
@@ -77,19 +78,19 @@ std::string VirtualKeyName(int virtualKey)
     const UINT scanCode = MapVirtualKeyW(
         static_cast<UINT>(virtualKey),
         MAPVK_VK_TO_VSC);
-    LONG keyNameParameter = static_cast<LONG>(scanCode << 16u);
+    LONG parameter = static_cast<LONG>(scanCode << 16u);
     if (virtualKey == VK_LEFT || virtualKey == VK_RIGHT ||
         virtualKey == VK_UP || virtualKey == VK_DOWN ||
         virtualKey == VK_INSERT || virtualKey == VK_DELETE ||
         virtualKey == VK_HOME || virtualKey == VK_END ||
         virtualKey == VK_PRIOR || virtualKey == VK_NEXT ||
         virtualKey == VK_DIVIDE || virtualKey == VK_NUMLOCK) {
-        keyNameParameter |= (1L << 24);
+        parameter |= (1L << 24);
     }
 
     wchar_t wideName[128]{};
     const int length = GetKeyNameTextW(
-        keyNameParameter,
+        parameter,
         wideName,
         static_cast<int>(std::size(wideName)));
     if (length > 0) {
@@ -132,6 +133,21 @@ bool IsDown(int virtualKey) noexcept
     return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 }
 
+bool AnyShiftDown() noexcept
+{
+    return IsDown(VK_LSHIFT) || IsDown(VK_RSHIFT);
+}
+
+bool AnyCtrlDown() noexcept
+{
+    return IsDown(VK_LCONTROL) || IsDown(VK_RCONTROL);
+}
+
+bool AnyAltDown() noexcept
+{
+    return IsDown(VK_LMENU) || IsDown(VK_RMENU);
+}
+
 } // namespace
 
 KeyInputService::KeyInputService(std::filesystem::path outputPath)
@@ -170,7 +186,9 @@ bool KeyInputService::start()
         eventCount_.store(0, std::memory_order_release);
         stopRequested_.store(false, std::memory_order_release);
         worker_ = std::thread(&KeyInputService::workerMain, this);
-        std::cout << "[KEYINPUT] CSV: " << outputPath_.string() << '\n';
+        std::cout
+            << "[KEYINPUT] service started at 5 ms polling\n"
+            << "[KEYINPUT] CSV: " << outputPath_.string() << '\n';
         return true;
     } catch (const std::exception& exception) {
         setError(exception.what());
@@ -242,19 +260,17 @@ void KeyInputService::workerMain() noexcept
                     << (current ? "down" : "up") << ','
                     << virtualKey << ','
                     << CsvEscape(VirtualKeyName(virtualKey)) << ','
-                    << (IsDown(VK_SHIFT) ? 1 : 0) << ','
-                    << (IsDown(VK_CONTROL) ? 1 : 0) << ','
-                    << (IsDown(VK_MENU) ? 1 : 0)
+                    << (AnyShiftDown() ? 1 : 0) << ','
+                    << (AnyCtrlDown() ? 1 : 0) << ','
+                    << (AnyAltDown() ? 1 : 0)
                     << '\n';
+                output_.flush();
 
                 if (!output_) {
                     throw std::runtime_error("key-input CSV write failed");
                 }
             }
 
-            if ((eventCount_.load(std::memory_order_acquire) & 63u) == 0u) {
-                output_.flush();
-            }
             std::this_thread::sleep_until(nextPoll);
         }
     } catch (const std::exception& exception) {
