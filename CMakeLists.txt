@@ -23,7 +23,7 @@ endif()
 set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg target triplet")
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.3.0
+    VERSION 0.4.0
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -34,8 +34,8 @@ include(FetchContent)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Do not update populated dependencies automatically" FORCE)
 
 set(DUAL_IC4_VARJO_IC4EXT_TAG "v1.0.1")
-set(DUAL_IC4_VARJO_VARJOXR_TAG "v0.1.0")
-set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG "v0.4.0")
+set(DUAL_IC4_VARJO_VARJOXR_TAG "68fc5697c06ae842c0af3b9f647fb39ec9c3e019")
+set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG "97ec3b3cc975455d8a664657e6596f62b2df0cff")
 set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
 set(DUAL_IC4_VARJO_CALIBRATION_COMMIT "8470b8e34b0bdd50546cd2215c8969b0512c3eaa")
 
@@ -111,9 +111,9 @@ set(IC4_SDK_ROOT "${_dual_ic4_resolved_sdk_root}" CACHE PATH "Path to the IC Ima
 message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
 
 # -----------------------------------------------------------------------------
-# VarjoToolkit v0.4.0 is resolved before VarjoXR. VarjoXR v0.1.0 otherwise pins
-# an older toolkit commit that does not expose the current EyeTracking, IMU, and
-# VST service APIs.
+# Resolve the tested external-frame VarjoToolkit before VarjoXR so both targets
+# use the same implementation. Eye tracking and IMU receive the frame snapshot
+# captured by VarjoXR's single rendering synchronization owner.
 # -----------------------------------------------------------------------------
 if(VARJOXR_VARJO_SDK_ROOT)
     set(VARJO_SDK_ROOT "${VARJOXR_VARJO_SDK_ROOT}" CACHE PATH "Path to Varjo Native SDK" FORCE)
@@ -127,7 +127,7 @@ if(NOT TARGET VarjoToolkit::VarjoToolkit)
         VarjoToolkit
         GIT_REPOSITORY https://github.com/Isasa2357/VarjoToolkit.git
         GIT_TAG        ${DUAL_IC4_VARJO_VARJOTOOLKIT_TAG}
-        GIT_SHALLOW    TRUE)
+        GIT_SHALLOW    FALSE)
     FetchContent_MakeAvailable(VarjoToolkit)
 endif()
 
@@ -149,7 +149,7 @@ FetchContent_Declare(
     VarjoXR
     GIT_REPOSITORY https://github.com/Isasa2357/VarjoXR.git
     GIT_TAG        ${DUAL_IC4_VARJO_VARJOXR_TAG}
-    GIT_SHALLOW    TRUE)
+    GIT_SHALLOW    FALSE)
 FetchContent_MakeAvailable(VarjoXR)
 
 set(IC4EXT_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
