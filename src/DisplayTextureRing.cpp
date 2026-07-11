@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 namespace DualIC4Varjo {
 namespace {
