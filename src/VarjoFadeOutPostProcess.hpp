@@ -129,8 +129,9 @@ public:
         fadeStarted_.store(false, std::memory_order_release);
         completed_.store(false, std::memory_order_release);
         std::cout
-            << "[VST_POSTPROCESS] shader configured; outside-plane blur+darken will enable after calibration, "
-            << "focus views map through sourceFocusRect, fade-out will take over on Esc\n";
+            << "[VST_POSTPROCESS] shader configured; outside-plane blur+darken "
+            << "will use blur radius " << kDefaultBlurRadiusPixels
+            << " px, focus views map through sourceFocusRect, fade-out will take over on Esc\n";
         return true;
     }
 
@@ -145,7 +146,7 @@ public:
         constants_ = makePassThroughConstants();
         constants_.mode = 1.0f;
         constants_.fadeAmount = 0.0f;
-        constants_.blurRadiusPixels = 2.0f;
+        constants_.blurRadiusPixels = kDefaultBlurRadiusPixels;
         constants_.darkenMultiplier = 0.5f;
         for (std::size_t view = 0; view < rects.size(); ++view) {
             constants_.planeRects[view][0] = rects[view].x0;
@@ -166,7 +167,8 @@ public:
             greenModeLogged_ = true;
             std::cout
                 << "[VST_POSTPROCESS] outside-plane blur+darken enabled "
-                << "(context views use their Plane rect; focus views map to context via sourceFocusRect)\n";
+                << "(blur radius=" << constants_.blurRadiusPixels
+                << " px; context views use their Plane rect; focus views map to context via sourceFocusRect)\n";
         }
         return true;
     }
@@ -184,13 +186,17 @@ public:
 
         if (!enableVideoRenderLocked()) return false;
 
-        // Keep the current blur and darken settings from the normal post-calibration
-        // mode. Once Esc hides the Plane, the former Plane region should also be
-        // blurred/darkened, then the darken multiplier fades to black over 2 s.
+        // Keep the current blur and darken settings from the normal Plane mask
+        // mode. Once shutdown hides the Plane, the former Plane region should
+        // also be blurred/darkened, then the darken multiplier fades to black.
         constants_.mode = 2.0f;
         constants_.fadeAmount = 0.0f;
-        if (constants_.blurRadiusPixels <= 0.0f) constants_.blurRadiusPixels = 2.0f;
-        if (constants_.darkenMultiplier <= 0.0f) constants_.darkenMultiplier = 0.5f;
+        if (constants_.blurRadiusPixels <= 0.0f) {
+            constants_.blurRadiusPixels = kDefaultBlurRadiusPixels;
+        }
+        if (constants_.darkenMultiplier <= 0.0f) {
+            constants_.darkenMultiplier = 0.5f;
+        }
         if (!shader_->submitConstantBuffer(constants_)) {
             lastError_ = shader_->lastError();
             return false;
@@ -205,7 +211,10 @@ public:
 
         fadeStarted_.store(true, std::memory_order_release);
         worker_ = std::thread([this] { workerMain(); });
-        std::cout << "[FADE] VST fade-out shader mode enabled; blur is kept and brightness fades to black\n";
+        std::cout
+            << "[FADE] VST fade-out shader mode enabled; blur radius "
+            << constants_.blurRadiusPixels
+            << " px is kept and brightness fades to black\n";
         return true;
     }
 
@@ -250,10 +259,12 @@ public:
     }
 
 private:
+    static constexpr float kDefaultBlurRadiusPixels = 8.0f;
+
     struct alignas(16) ShaderConstants {
         float mode = 0.0f;            // 0: passthrough, 1: blur+darken outside Plane, 2: full-screen blur+darken fade-out
         float fadeAmount = 0.0f;      // Used only when mode == 2. 0 -> darkenMultiplier, 1 -> black.
-        float blurRadiusPixels = 2.0f;
+        float blurRadiusPixels = kDefaultBlurRadiusPixels;
         float darkenMultiplier = 0.5f;
         float planeRects[4][4]{}; // x0, y0, x1, y1 in context-view normalized coordinates
     };
@@ -264,7 +275,7 @@ private:
         ShaderConstants constants{};
         constants.mode = 0.0f;
         constants.fadeAmount = 0.0f;
-        constants.blurRadiusPixels = 2.0f;
+        constants.blurRadiusPixels = kDefaultBlurRadiusPixels;
         constants.darkenMultiplier = 0.5f;
         for (auto& rect : constants.planeRects) {
             rect[0] = 2.0f;
@@ -415,7 +426,7 @@ float4 LoadSourceClamped(int2 p)
 
 float3 BoxBlurCurrentViewRgb(int2 pixel)
 {
-    const int radius = max(1, (int)(blurRadiusPixels + 0.5f));
+    const int radius = min(32, max(1, (int)(blurRadiusPixels + 0.5f)));
     float3 accum = float3(0.0f, 0.0f, 0.0f);
     float sampleCount = 0.0f;
 
@@ -451,7 +462,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     const float4 source = inputTex.Load(int3(pixel, 0));
 
     if (mode > 1.5f) {
-        // After Esc the Plane is hidden. Apply the same blur everywhere,
+        // After shutdown the Plane is hidden. Apply the same blur everywhere,
         // including the former Plane area, and fade brightness from the current
         // darkenMultiplier down to full black over fadeSeconds.
         const float brightness = saturate(darkenMultiplier) * (1.0f - saturate(fadeAmount));
