@@ -33,6 +33,15 @@ struct PlanePostProcessRuntimeConfig {
     float revealOpenSeconds = 0.5f;
     float revealHoldSeconds = 3.0f;
     float revealCloseSeconds = 0.5f;
+
+    // The reveal animation expands the clear circle to this radius measured
+    // against the image short axis. 4.0 covers ordinary aspect ratios even if
+    // the center is moved near an edge. Keep this configurable for later UI/key
+    // controls without changing the HLSL interface again.
+    float revealExpandedRadiusShortAxis01 = 4.0f;
+
+    // Default to F23 so an external keypad / remapper can trigger the effect
+    // without colliding with ordinary desktop shortcuts.
     int revealVirtualKey = VK_F23;
 };
 
@@ -123,6 +132,130 @@ inline float PositiveOr(float value, float fallback) noexcept
     return std::isfinite(value) && value > 0.0f ? value : fallback;
 }
 
+inline std::atomic<std::uint64_t>& GlobalRevealTriggerCounter() noexcept
+{
+    static std::atomic<std::uint64_t> counter{0};
+    return counter;
+}
+
+inline std::atomic_bool& GlobalRevealKeyDown() noexcept
+{
+    static std::atomic_bool down{false};
+    return down;
+}
+
+inline std::atomic_int& GlobalRevealKeyStateKey() noexcept
+{
+    static std::atomic_int key{VK_F23};
+    return key;
+}
+
+inline LRESULT CALLBACK GlobalRevealKeyboardHookProc(
+    int code,
+    WPARAM wParam,
+    LPARAM lParam)
+{
+    if (code == HC_ACTION && lParam != 0) {
+        const auto* event = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        const int configuredKey = SanitizeRevealVirtualKey(
+            GetPostProcessRuntimeConfig().revealVirtualKey);
+
+        const int previousKey = GlobalRevealKeyStateKey().load(
+            std::memory_order_acquire);
+        if (previousKey != configuredKey) {
+            GlobalRevealKeyStateKey().store(
+                configuredKey,
+                std::memory_order_release);
+            GlobalRevealKeyDown().store(false, std::memory_order_release);
+        }
+
+        if (event && static_cast<int>(event->vkCode) == configuredKey) {
+            const bool keyDownEvent =
+                wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+            const bool keyUpEvent =
+                wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+
+            if (keyDownEvent) {
+                bool expected = false;
+                if (GlobalRevealKeyDown().compare_exchange_strong(
+                        expected,
+                        true,
+                        std::memory_order_acq_rel,
+                        std::memory_order_acquire)) {
+                    GlobalRevealTriggerCounter().fetch_add(
+                        1,
+                        std::memory_order_acq_rel);
+                }
+            } else if (keyUpEvent) {
+                GlobalRevealKeyDown().store(false, std::memory_order_release);
+            }
+        }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+inline void EnsureGlobalRevealKeyboardHookStarted()
+{
+    static std::atomic_bool started{false};
+    bool expected = false;
+    if (!started.compare_exchange_strong(
+            expected,
+            true,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+        return;
+    }
+
+    std::thread([]() noexcept {
+        const HHOOK hook = SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            &GlobalRevealKeyboardHookProc,
+            GetModuleHandleW(nullptr),
+            0);
+        if (!hook) {
+            std::cerr
+                << "[POSTPROCESS] global reveal key hook failed; "
+                << "falling back to focused-window polling\n";
+            return;
+        }
+
+        std::cout
+            << "[POSTPROCESS] global reveal key hook active (default F23)\n";
+
+        MSG message{};
+        while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        UnhookWindowsHookEx(hook);
+    }).detach();
+}
+
+inline bool ConsumeRevealKeyPressed(
+    int revealVirtualKey,
+    bool& focusedPollingPreviousDown)
+{
+    EnsureGlobalRevealKeyboardHookStarted();
+
+    static thread_local std::uint64_t observedGlobalTriggerCount = 0;
+    const std::uint64_t currentGlobalTriggerCount =
+        GlobalRevealTriggerCounter().load(std::memory_order_acquire);
+    if (currentGlobalTriggerCount != observedGlobalTriggerCount) {
+        observedGlobalTriggerCount = currentGlobalTriggerCount;
+
+        // Keep the focused polling edge state in sync so one physical press does
+        // not become both a global-hook event and a polling event on the next
+        // render frame.
+        focusedPollingPreviousDown =
+            (GetAsyncKeyState(revealVirtualKey) & 0x8000) != 0;
+        return true;
+    }
+
+    // Fallback path used when the low-level hook cannot be installed. This may
+    // depend on foreground/focus, but keeps the old behavior available.
+    return KeyPressedEdge(revealVirtualKey, focusedPollingPreviousDown);
+}
+
 inline void ApplyPlaneVisibilityFromKeyboard(VarjoXR::XRPlane& plane)
 {
     static thread_local bool oDown = false;
@@ -139,27 +272,63 @@ inline void ApplyPlaneVisibilityFromKeyboard(VarjoXR::XRPlane& plane)
         << " (rendering continues, O toggles)\n";
 }
 
+inline StereoPostProcessSettings MakeRadiusRevealSettings(
+    const PlanePostProcessRuntimeConfig& config,
+    float revealAmount01) noexcept
+{
+    StereoPostProcessSettings settings = config.settings;
+    const float reveal = std::clamp(
+        std::isfinite(revealAmount01) ? revealAmount01 : 0.0f,
+        0.0f,
+        1.0f);
+    const float baseRadius = std::clamp(
+        std::isfinite(settings.radiusShortAxis01)
+            ? settings.radiusShortAxis01
+            : 0.25f,
+        0.0f,
+        4.0f);
+    const float expandedRadius = std::max(
+        baseRadius,
+        std::clamp(
+            PositiveOr(config.revealExpandedRadiusShortAxis01, 4.0f),
+            0.0f,
+            4.0f));
+    settings.radiusShortAxis01 =
+        baseRadius + (expandedRadius - baseRadius) * reveal;
+    return settings;
+}
+
 inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
 {
     using Clock = std::chrono::steady_clock;
 
-    static thread_local bool revealKeyDown = false;
+    static thread_local bool revealPollingDown = false;
+    static thread_local int previousRevealVirtualKey = 0;
     static thread_local bool pulseActive = false;
     static thread_local Clock::time_point pulseStart{};
 
     const auto config = GetPostProcessRuntimeConfig();
     const int revealVirtualKey = SanitizeRevealVirtualKey(config.revealVirtualKey);
+    if (previousRevealVirtualKey != revealVirtualKey) {
+        revealPollingDown = false;
+        previousRevealVirtualKey = revealVirtualKey;
+    }
+
     const char* revealKeyName = RevealVirtualKeyName(revealVirtualKey);
     const auto now = Clock::now();
-    const bool revealPressed = KeyPressedEdge(revealVirtualKey, revealKeyDown);
+    const bool revealPressed = ConsumeRevealKeyPressed(
+        revealVirtualKey,
+        revealPollingDown);
     if (revealPressed && !pulseActive) {
         pulseActive = true;
         pulseStart = now;
         std::cout
-            << "[POSTPROCESS] reveal pulse started by " << revealKeyName << ": "
+            << "[POSTPROCESS] reveal radius pulse started by " << revealKeyName << ": "
             << "open=" << config.revealOpenSeconds
             << "s, hold=" << config.revealHoldSeconds
-            << "s, close=" << config.revealCloseSeconds << "s\n";
+            << "s, close=" << config.revealCloseSeconds
+            << "s, expanded_radius="
+            << config.revealExpandedRadiusShortAxis01 << "\n";
     } else if (revealPressed && pulseActive) {
         std::cout
             << "[POSTPROCESS] reveal pulse is active; "
@@ -187,7 +356,13 @@ inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
         revealAmount = std::clamp(revealAmount, 0.0f, 1.0f);
     }
 
-    UpdatePlanePostProcessState(plane, config.settings, revealAmount);
+    const StereoPostProcessSettings animatedSettings =
+        MakeRadiusRevealSettings(config, revealAmount);
+
+    // revealAmount is consumed by the CPU-side radius animation above. Keep the
+    // shader's brightness-reveal channel at zero so the visual change is the
+    // requested expanding/shrinking boundary circle rather than a brightness fade.
+    UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
 }
 
 inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
