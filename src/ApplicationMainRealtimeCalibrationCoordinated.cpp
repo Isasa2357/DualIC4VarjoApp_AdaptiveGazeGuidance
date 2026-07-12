@@ -13,6 +13,7 @@
 #include "GuiPerformanceStats.hpp"
 #include "GuiPlaneControlIntegration.hpp"
 #include "KeyboardLockIntegration.hpp"
+#include "PersonalizationSettings.hpp"
 #include "PostProcessDefaultOverrides.hpp"
 
 // The included application defines these macros itself. Undefine them here to
@@ -45,7 +46,8 @@
 // Register the Plane immediately after XRSpace::createPlane() returns. The
 // render-token replacement applies GUI/keyboard input on the Varjo render thread,
 // starts/updates the VST blur+darken mask from the first visible Plane frame,
-// publishes camera counters, and applies shutdown Plane transparency.
+// publishes camera counters, captures personalization state, and applies shutdown
+// Plane transparency.
 #define createPlane(...) createPlane(__VA_ARGS__); \
     DualIC4Varjo::CalibrationRuntimeBridge::RegisterPlane(plane); \
     DualIC4Varjo::FadeOutPostProcessIntegration::RegisterRuntime( \
@@ -55,6 +57,7 @@
     DualIC4Varjo::GuiPerformanceStats::SubmitCameraReadFrames( \
         leftCamera.stats().readFrames, rightCamera.stats().readFrames); \
     DualIC4Varjo::GuiPlaneControlIntegration::ApplyPlaneInputAfterRender(plane); \
+    DualIC4Varjo::PersonalizationSettings::CapturePlaneState(plane); \
     DualIC4Varjo::FadeOutPostProcessIntegration::UpdatePlaneMaskFromFrame( \
         plane, d3dBackend.frameInfoSnapshot()); \
     DualIC4Varjo::FadeOutPostProcessIntegration::ApplyPlaneFadeVisibility(plane)
