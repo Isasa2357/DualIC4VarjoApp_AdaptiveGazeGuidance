@@ -45,7 +45,7 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.21.2
+    VERSION 0.21.3
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -279,6 +279,7 @@ add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
     src/ApplicationMainRealtimeCalibrationCoordinated.cpp
+    src/CalibrationRuntimeBridge.hpp
     src/CheckerboardStereoCalibration.cpp
     src/CheckerboardStereoCalibration.hpp
     src/CoordinatedCameraCaptureThread.hpp
@@ -288,7 +289,7 @@ add_executable(DualIC4VarjoApp
     src/EyeTrackerLoadServiceHook.hpp
     src/GazeOnCameraFrameService.cpp
     src/GazeOnCameraFrameService.hpp
-    src/ImGuiStereoPreview.cpp
+    src/ImGuiStereoPreviewGazeOverlay.cpp
     src/ImGuiStereoPreview.hpp
     src/ImuLoadServiceHook.cpp
     src/ImuLoadServiceHook.hpp
