@@ -31,6 +31,9 @@ namespace DualIC4Varjo::ImGuiGazeOverlay {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+constexpr float kPerformanceSampleSeconds = 0.5f;
+constexpr float kPerformanceHistorySeconds = 20.0f;
+constexpr std::size_t kPerformanceHistoryCapacity = 40;
 
 struct SideSample {
     bool valid = false;
@@ -300,7 +303,7 @@ public:
     void push(float value)
     {
         values_.push_back(std::isfinite(value) ? std::max(0.0f, value) : 0.0f);
-        if (values_.size() > capacity_) values_.pop_front();
+        if (values_.size() > kPerformanceHistoryCapacity) values_.pop_front();
     }
 
     const std::deque<float>& values() const noexcept { return values_; }
@@ -308,7 +311,6 @@ public:
 
 private:
     std::deque<float> values_;
-    std::size_t capacity_ = 120;
 };
 
 struct CounterSnapshot {
@@ -358,7 +360,7 @@ public:
 
         const double elapsed =
             std::chrono::duration<double>(now - previousTime_).count();
-        if (elapsed < 0.5) return;
+        if (elapsed < static_cast<double>(kPerformanceSampleSeconds)) return;
 
         cameraLeft.push(rate(previous_.cameraLeft, current.cameraLeft, elapsed));
         cameraRight.push(rate(previous_.cameraRight, current.cameraRight, elapsed));
@@ -677,7 +679,7 @@ void DrawPerformancePanel()
     auto& performance = Performance();
     ImGui::TextUnformatted("Live rates");
     ImGui::SameLine(0.0f, 16.0f);
-    ImGui::TextDisabled("0.5 s sampling / recent history");
+    ImGui::TextDisabled("0.5 s sampling / last about 20 s");
     ImGui::Separator();
     ImGui::Spacing();
 
