@@ -19,6 +19,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -129,7 +130,7 @@ public:
         completed_.store(false, std::memory_order_release);
         std::cout
             << "[VST_POSTPROCESS] shader configured; green mask will enable after calibration, "
-            << "fade-out will take over on Esc\n";
+            << "focus views map through sourceFocusRect, fade-out will take over on Esc\n";
         return true;
     }
 
@@ -163,7 +164,7 @@ public:
             greenModeLogged_ = true;
             std::cout
                 << "[VST_POSTPROCESS] green outside-plane mask enabled "
-                << "(Plane rect is passed through)\n";
+                << "(context views use their Plane rect; focus views map to context via sourceFocusRect)\n";
         }
         return true;
     }
@@ -248,7 +249,7 @@ private:
         float fadeAmount = 0.0f; // Used only when mode == 2
         float reserved0 = 0.0f;
         float reserved1 = 0.0f;
-        float planeRects[4][4]{}; // x0, y0, x1, y1 in current view normalized coordinates
+        float planeRects[4][4]{}; // x0, y0, x1, y1 in context-view normalized coordinates
     };
     static_assert(sizeof(ShaderConstants) == 80, "shader constants must remain 16-byte aligned");
 
@@ -304,6 +305,11 @@ private:
         return R"hlsl(
 #define BLOCK_SIZE 8
 
+#define VIEW_CONTEXT_L 0
+#define VIEW_CONTEXT_R 1
+#define VIEW_FOCUS_L 2
+#define VIEW_FOCUS_R 3
+
 Texture2D<float4> inputTex : register(t0);
 RWTexture2D<float4> outputTex : register(u0);
 SamplerState SamplerLinearClamp : register(s0);
@@ -341,10 +347,55 @@ bool IsInsideRect(float2 uv, float4 rect)
     return uv.x >= rect.x && uv.x <= rect.z && uv.y >= rect.y && uv.y <= rect.w;
 }
 
+int ContextRectIndexForCurrentView()
+{
+    if (viewIndex == VIEW_CONTEXT_R || viewIndex == VIEW_FOCUS_R) {
+        return 1;
+    }
+    return 0;
+}
+
+float2 ContextUvForCurrentView(int2 pixel, int2 localPixel)
+{
+    const float2 contextSize = max(
+        float2((float)sourceContextSize.x, (float)sourceContextSize.y),
+        float2(1.0f, 1.0f));
+
+    if (viewIndex == VIEW_FOCUS_L || viewIndex == VIEW_FOCUS_R) {
+        // Varjo focus views are sampled in focus-local coordinates, but the
+        // postprocess decision should match the context view at the same real
+        // VST location. sourceFocusRect gives the focus-view area inside the
+        // context texture. In practice the focus local Y axis is flipped
+        // relative to context, so flip Y before mapping into sourceFocusRect.
+        const float2 c0 = float2((float)sourceFocusRect.x, (float)sourceFocusRect.y);
+        const float2 c1 = float2((float)sourceFocusRect.z, (float)sourceFocusRect.w);
+        const float2 cMin = min(c0, c1);
+        const float2 cMax = max(c0, c1);
+        const float2 focusRectSizeInContext = max(cMax - cMin, float2(1.0f, 1.0f));
+        const float2 focusSize = max(
+            float2((float)sourceSize.x, (float)sourceSize.y),
+            float2(1.0f, 1.0f));
+
+        const float focusX = clamp((float)localPixel.x, 0.0f, focusSize.x - 1.0f);
+        const float focusY = clamp((float)localPixel.y, 0.0f, focusSize.y - 1.0f);
+        const float focusYFlipped = (focusSize.y - 1.0f) - focusY;
+
+        const float2 contextPixel = cMin +
+            float2(focusX, focusYFlipped) * (focusRectSizeInContext / focusSize);
+        return saturate((contextPixel + 0.5f) / contextSize);
+    }
+
+    // Context views already use context texture coordinates. Use pixel rather
+    // than destRect-normalized coordinates so focus and context execute the
+    // same mask decision in context space.
+    return saturate((float2((float)pixel.x, (float)pixel.y) + 0.5f) / contextSize);
+}
+
 [numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    const int2 pixel = int2(dispatchThreadID.xy) + destRect.xy;
+    const int2 localPixel = int2(dispatchThreadID.xy);
+    const int2 pixel = localPixel + destRect.xy;
     if (pixel.x < destRect.x || pixel.y < destRect.y ||
         pixel.x >= destRect.x + destRect.z ||
         pixel.y >= destRect.y + destRect.w) {
@@ -361,16 +412,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
 
     if (mode > 0.5f) {
-        const float2 destSize = max(
-            float2((float)destRect.z, (float)destRect.w),
-            float2(1.0f, 1.0f));
-        const float2 uv = (
-            float2((float)pixel.x, (float)pixel.y) + 0.5f -
-            float2((float)destRect.x, (float)destRect.y)) / destSize;
-        int rectIndex = viewIndex;
-        if (rectIndex < 0) rectIndex = 0;
-        if (rectIndex > 3) rectIndex = 3;
-        if (IsInsideRect(uv, planeRects[rectIndex])) {
+        const float2 contextUv = ContextUvForCurrentView(pixel, localPixel);
+        const int rectIndex = ContextRectIndexForCurrentView();
+        if (IsInsideRect(contextUv, planeRects[rectIndex])) {
             outputTex[pixel] = source;
         } else {
             outputTex[pixel] = float4(0.0f, 1.0f, 0.0f, source.a);
