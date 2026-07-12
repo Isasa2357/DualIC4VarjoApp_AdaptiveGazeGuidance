@@ -52,8 +52,34 @@ private:
     bool downDown_ = false;
 };
 
+inline bool KeyPressedEdge(int key, bool& previous) noexcept
+{
+    const bool current = (GetAsyncKeyState(key) & 0x8000) != 0;
+    const bool edge = current && !previous;
+    previous = current;
+    return edge;
+}
+
+inline void ApplyPlaneVisibilityFromKeyboard(VarjoXR::XRPlane& plane)
+{
+    static thread_local bool oDown = false;
+    static thread_local bool visible = true;
+
+    if (!KeyPressedEdge('O', oDown)) return;
+
+    visible = !visible;
+    const float alpha = visible ? 1.0f : 0.0f;
+    plane.setTint({1.0f, 1.0f, 1.0f, alpha});
+    std::cout
+        << "[PLANE] Varjo plane "
+        << (visible ? "visible" : "transparent")
+        << " (rendering continues, O toggles)\n";
+}
+
 inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
 {
+    ApplyPlaneVisibilityFromKeyboard(plane);
+
     if (!gCalibrationActive.load(std::memory_order_acquire)) return;
 
     static thread_local ArrowEdgeState keys;
@@ -148,7 +174,8 @@ inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
     std::cout
         << "[CALIB] OpenCV preview disabled\n"
         << "[CALIB] controls: Q=finish, R=clear observations, Esc=abort\n"
-        << "[CALIB] move plane: arrows; resize/distance: Shift+arrows\n";
+        << "[CALIB] move plane: arrows; resize/distance: Shift+arrows\n"
+        << "[CALIB] hide/show Varjo plane: O\n";
 
     gCalibrationActive.store(true, std::memory_order_release);
     std::atomic_bool windowThreadStop{false};
