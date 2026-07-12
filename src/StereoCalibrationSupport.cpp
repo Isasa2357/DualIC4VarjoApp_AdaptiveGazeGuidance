@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -157,10 +158,12 @@ struct alignas(16) RectificationConstants {
     std::array<float, 4> inverseRow1{};
     std::array<float, 4> inverseRow2{};
     std::array<float, 4> borderRgba{};
+    std::array<float, 4> postprocess0{};
+    std::array<float, 4> postprocess1{};
 };
 
 static_assert(
-    sizeof(RectificationConstants) == 64,
+    sizeof(RectificationConstants) == 96,
     "Unexpected rectification constant layout");
 
 float CheckedFloat(double value)
@@ -173,9 +176,54 @@ float CheckedFloat(double value)
     return result;
 }
 
+float FiniteOr(float value, float fallback) noexcept
+{
+    return std::isfinite(value) ? value : fallback;
+}
+
+StereoPostProcessSettings SanitizePostProcessSettings(
+    StereoPostProcessSettings settings) noexcept
+{
+    settings.centerX01 = std::clamp(
+        FiniteOr(settings.centerX01, 0.5f), 0.0f, 1.0f);
+    settings.centerY01 = std::clamp(
+        FiniteOr(settings.centerY01, 0.5f), 0.0f, 1.0f);
+    settings.radiusShortAxis01 = std::clamp(
+        FiniteOr(settings.radiusShortAxis01, 0.25f), 0.0f, 4.0f);
+    settings.edgeSoftnessShortAxis01 = std::clamp(
+        FiniteOr(settings.edgeSoftnessShortAxis01, 0.03f), 0.0f, 4.0f);
+    settings.outsideBrightness = std::clamp(
+        FiniteOr(settings.outsideBrightness, 0.5f), 0.0f, 1.0f);
+    return settings;
+}
+
+void ApplyPostProcessConstants(
+    RectificationConstants& constants,
+    StereoPostProcessSettings settings,
+    float revealAmount01) noexcept
+{
+    settings = SanitizePostProcessSettings(settings);
+    const float reveal = std::clamp(
+        FiniteOr(revealAmount01, 0.0f), 0.0f, 1.0f);
+    constants.postprocess0 = {
+        settings.centerX01,
+        settings.centerY01,
+        settings.radiusShortAxis01,
+        settings.edgeSoftnessShortAxis01,
+    };
+    constants.postprocess1 = {
+        settings.outsideBrightness,
+        reveal,
+        settings.enabled ? 1.0f : 0.0f,
+        0.0f,
+    };
+}
+
 RectificationConstants MakeConstants(
     const CalibrationHomography& inverse,
-    const std::array<float, 4>& borderRgba)
+    const std::array<float, 4>& borderRgba,
+    const StereoPostProcessSettings& postProcessSettings,
+    float revealAmount01)
 {
     RectificationConstants result;
     for (std::size_t column = 0;
@@ -189,10 +237,11 @@ RectificationConstants MakeConstants(
             CheckedFloat(inverse.rows[6 + column]);
     }
     result.borderRgba = borderRgba;
+    ApplyPostProcessConstants(result, postProcessSettings, revealAmount01);
     return result;
 }
 
-const char* RemapHlsl() noexcept
+const char* RemapPostProcessHlsl() noexcept
 {
     return R"hlsl(
 Texture2D<float4> xrInput : register(t0);
@@ -204,6 +253,8 @@ cbuffer RectificationConstants : register(b0)
     float4 inverseRow1;
     float4 inverseRow2;
     float4 borderRgba;
+    float4 postprocess0; // xy=center01, z=radius(short-axis), w=edge softness(short-axis)
+    float4 postprocess1; // x=outside brightness, y=reveal amount, z=enabled, w=reserved
 };
 
 cbuffer XRTextureProcessingFrameConstants : register(b1)
@@ -243,6 +294,28 @@ float4 SampleLinear(float2 sourcePixel)
         fraction.y);
 }
 
+float4 ApplyDarkenPostProcess(float4 color, uint2 pixel)
+{
+    if (postprocess1.z < 0.5f) return color;
+
+    const float2 outputSize = float2((float)dstWidth, (float)dstHeight);
+    const float shortAxis = max(1.0f, min(outputSize.x, outputSize.y));
+    const float2 uv = (float2(pixel) + 0.5f) / outputSize;
+    const float2 normalizedDelta = (uv - postprocess0.xy) * outputSize / shortAxis;
+    const float distanceFromCenter = length(normalizedDelta);
+
+    const float radius = max(0.0f, postprocess0.z);
+    const float softness = max(1.0e-5f, postprocess0.w);
+    const float outsideMask = smoothstep(radius, radius + softness, distanceFromCenter);
+
+    const float outsideBrightness = saturate(postprocess1.x);
+    const float reveal = saturate(postprocess1.y);
+    const float darkenFactor = lerp(1.0f, outsideBrightness, outsideMask);
+    const float finalFactor = lerp(darkenFactor, 1.0f, reveal);
+    color.rgb *= finalFactor;
+    return color;
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -271,7 +344,9 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    xrOutput[id.xy] = SampleLinear(sourcePixel);
+    xrOutput[id.xy] = ApplyDarkenPostProcess(
+        SampleLinear(sourcePixel),
+        id.xy);
 }
 )hlsl";
 }
@@ -279,27 +354,46 @@ void main(uint3 id : SV_DispatchThreadID)
 VarjoXR::TextureProcessingDesc MakeProcessing(
     const CalibrationHomography& inverse,
     const std::array<float, 4>& borderRgba,
-    CalibrationImageSize outputSize)
+    CalibrationImageSize outputSize,
+    const StereoPostProcessSettings& postProcessSettings)
 {
     VarjoXR::TextureProcessingDesc result{};
     result.enabled = true;
     result.timing =
-        VarjoXR::ProcessingTiming::OnTextureChanged;
-    result.hlsl = RemapHlsl();
+        VarjoXR::ProcessingTiming::BeforeRenderEachFrame;
+    result.hlsl = RemapPostProcessHlsl();
     result.entryPoint = "main";
     result.target = "cs_5_0";
     result.sourceName =
-        "DualIC4Varjo_StaticStereoRemap.hlsl";
+        "DualIC4Varjo_StereoRemapDarkenPostProcess.hlsl";
     result.outputSize = {
         outputSize.width,
         outputSize.height,
     };
     result.userConstants.registerIndex = 0;
     result.userConstants.set(
-        MakeConstants(inverse, borderRgba));
+        MakeConstants(inverse, borderRgba, postProcessSettings, 0.0f));
     result.frameConstants.enabled = true;
     result.frameConstants.registerIndex = 1;
     return result;
+}
+
+void UpdatePostProcessStateForEye(
+    VarjoXR::XRPlane& plane,
+    VarjoXR::Eye eye,
+    const StereoPostProcessSettings& settings,
+    float revealAmount01) noexcept
+{
+    auto& processing = plane.material(eye).processing;
+    auto& data = processing.userConstants.data;
+    if (!processing.enabled || data.size() != sizeof(RectificationConstants)) {
+        return;
+    }
+
+    RectificationConstants constants{};
+    std::memcpy(&constants, data.data(), sizeof(constants));
+    ApplyPostProcessConstants(constants, settings, revealAmount01);
+    processing.userConstants.set(constants);
 }
 
 } // namespace
@@ -434,7 +528,8 @@ void ValidateCalibrationInputGeometry(
 void ApplyCalibrationToPlane(
     VarjoXR::XRPlane& plane,
     const StereoCalibrationDocument& document,
-    const std::string& profileName)
+    const std::string& profileName,
+    const StereoPostProcessSettings& postProcessSettings)
 {
     ValidateDocument(document);
     const CalibrationProfile& selected =
@@ -445,13 +540,32 @@ void ApplyCalibrationToPlane(
         MakeProcessing(
             selected.leftInverse,
             document.borderRgba,
-            document.rectifiedOutputSize));
+            document.rectifiedOutputSize,
+            postProcessSettings));
     plane.setProcessing(
         VarjoXR::Eye::Right,
         MakeProcessing(
             selected.rightInverse,
             document.borderRgba,
-            document.rectifiedOutputSize));
+            document.rectifiedOutputSize,
+            postProcessSettings));
+}
+
+void UpdatePlanePostProcessState(
+    VarjoXR::XRPlane& plane,
+    const StereoPostProcessSettings& settings,
+    float revealAmount01)
+{
+    UpdatePostProcessStateForEye(
+        plane,
+        VarjoXR::Eye::Left,
+        settings,
+        revealAmount01);
+    UpdatePostProcessStateForEye(
+        plane,
+        VarjoXR::Eye::Right,
+        settings,
+        revealAmount01);
 }
 
 void UpdatePlaneAspectFromCalibration(
