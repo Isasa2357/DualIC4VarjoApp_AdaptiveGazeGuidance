@@ -122,8 +122,9 @@ public:
 
     bool startFadeOut()
     {
+        if (!initialize()) return false;
+
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!initialized_ && !initializeLocked()) return false;
         if (started_.load(std::memory_order_acquire)) return true;
 
         lastError_.clear();
@@ -242,12 +243,6 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 )hlsl";
     }
 
-    bool initializeLocked()
-    {
-        std::lock_guard<std::mutex> recursiveGuard(initializeMutex_);
-        return initialize();
-    }
-
     bool compileShader(Microsoft::WRL::ComPtr<ID3DBlob>& bytecode)
     {
         UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
@@ -331,7 +326,6 @@ private:
     Config config_{};
     std::unique_ptr<VarjoVideoPostProcessShader> shader_;
     mutable std::mutex mutex_;
-    mutable std::mutex initializeMutex_;
     std::thread worker_;
     std::atomic_bool initialized_{false};
     std::atomic_bool started_{false};
