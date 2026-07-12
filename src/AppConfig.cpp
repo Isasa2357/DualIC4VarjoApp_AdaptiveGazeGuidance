@@ -1,4 +1,5 @@
 #include "AppConfig.hpp"
+#include "PersonalizationSettings.hpp"
 
 #include <limits>
 #include <type_traits>
@@ -86,6 +87,37 @@ bool ParsePostProcessMode(
     return false;
 }
 
+bool HasHelpArgument(int argc, char** argv) noexcept
+{
+    for (int i = 1; i < argc; ++i) {
+        const std::string option = argv[i] ? argv[i] : "";
+        if (option == "--help" || option == "-h") return true;
+    }
+    return false;
+}
+
+bool ScanPersonalizationName(
+    int argc,
+    char** argv,
+    AppConfig& config,
+    std::string& error)
+{
+    config.personalizationName = "DEFAULT";
+    for (int i = 1; i < argc; ++i) {
+        const std::string option = argv[i] ? argv[i] : "";
+        if (option != "--name") continue;
+        if (i + 1 >= argc || !argv[i + 1]) {
+            error = "Missing value for --name";
+            return false;
+        }
+        config.personalizationName = argv[++i];
+    }
+    if (config.personalizationName.empty()) {
+        config.personalizationName = "DEFAULT";
+    }
+    return true;
+}
+
 } // namespace
 
 bool ParseArguments(
@@ -96,6 +128,18 @@ bool ParseArguments(
 {
     config.left.selector.deviceIndex = 0;
     config.right.selector.deviceIndex = 1;
+
+    if (HasHelpArgument(argc, argv)) {
+        config.showHelp = true;
+        return true;
+    }
+
+    if (!ScanPersonalizationName(argc, argv, config, error)) {
+        return false;
+    }
+    if (!PersonalizationSettings::LoadIntoConfig(config, error)) {
+        return false;
+    }
 
     auto requireValue =
         [&](int& index, const std::string& option) -> const char* {
@@ -113,10 +157,10 @@ bool ParseArguments(
     };
 
     for (int i = 1; i < argc; ++i) {
-        const std::string option = argv[i];
-        if (option == "--help" || option == "-h") {
-            config.showHelp = true;
-            return true;
+        const std::string option = argv[i] ? argv[i] : "";
+        if (option == "--name") {
+            ++i;
+            continue;
         }
 
         const char* raw = requireValue(i, option);
@@ -421,6 +465,7 @@ bool ParseArguments(
     if (config.metadataCsv.empty()) {
         config.metadataCsv = MakeDefaultMetadataPath();
     }
+    PersonalizationSettings::EnableAutoSave();
     return true;
 }
 
@@ -452,7 +497,8 @@ void PrintUsage(std::ostream& out)
         "  --plane-width-m N --plane-height-m N\n"
         "  --plane-x-m N --plane-y-m N --plane-distance-m N\n"
         "  --display-ring-size N\n"
-        "  --postprocess none|darken|blur   Default: none; blue is accepted as blur alias\n\n"
+        "  --postprocess none|darken|blur   Default: none; blue is accepted as blur alias\n"
+        "  --name NAME                      Personalization profile in personalization/NAME.json; default DEFAULT\n\n"
         "PC ImGui preview:\n"
         "  --pc-preview 0|1                 Default: 1\n"
         "  --pc-preview-width N             Default: 1600\n"
