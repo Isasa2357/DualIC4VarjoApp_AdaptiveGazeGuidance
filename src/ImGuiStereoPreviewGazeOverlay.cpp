@@ -63,15 +63,10 @@ std::vector<std::string> SplitComma(const std::string& line)
 
 float ParseFloat(const std::string& text)
 {
-    if (text.empty() || text == "nan" || text == "nullopt") {
-        return std::numeric_limits<float>::quiet_NaN();
-    }
+    if (text.empty() || text == "nan" || text == "nullopt") return std::numeric_limits<float>::quiet_NaN();
     char* end = nullptr;
     const float value = std::strtof(text.c_str(), &end);
-    if (!end || end == text.c_str()) {
-        return std::numeric_limits<float>::quiet_NaN();
-    }
-    return value;
+    return (!end || end == text.c_str()) ? std::numeric_limits<float>::quiet_NaN() : value;
 }
 
 std::int64_t ParseI64(const std::string& text)
@@ -79,8 +74,7 @@ std::int64_t ParseI64(const std::string& text)
     if (text.empty() || text == "nan" || text == "nullopt") return 0;
     char* end = nullptr;
     const long long value = std::strtoll(text.c_str(), &end, 10);
-    if (!end || end == text.c_str()) return 0;
-    return static_cast<std::int64_t>(value);
+    return (!end || end == text.c_str()) ? 0 : static_cast<std::int64_t>(value);
 }
 
 bool ParseBool01(const std::string& text)
@@ -153,31 +147,24 @@ private:
     {
         const auto columns = SplitComma(line);
         header_.clear();
-        for (std::size_t index = 0; index < columns.size(); ++index) {
-            header_[columns[index]] = index;
-        }
+        for (std::size_t index = 0; index < columns.size(); ++index) header_[columns[index]] = index;
         headerParsed_ = true;
     }
 
     std::optional<std::size_t> column(const char* name) const
     {
         const auto it = header_.find(name);
-        if (it == header_.end()) return std::nullopt;
-        return it->second;
+        return it == header_.end() ? std::nullopt : std::optional<std::size_t>(it->second);
     }
 
-    std::string value(
-        const std::vector<std::string>& columns,
-        const char* name) const
+    std::string value(const std::vector<std::string>& columns, const char* name) const
     {
         const auto index = column(name);
         if (!index || *index >= columns.size()) return {};
         return columns[*index];
     }
 
-    SideSample parseSide(
-        const std::vector<std::string>& columns,
-        const char* prefix) const
+    SideSample parseSide(const std::vector<std::string>& columns, const char* prefix) const
     {
         SideSample side;
         const std::string xName = std::string(prefix) + "_camera_x01";
@@ -186,10 +173,8 @@ private:
         side.x01 = ParseFloat(value(columns, xName.c_str()));
         side.y01 = ParseFloat(value(columns, yName.c_str()));
         side.inside = ParseBool01(value(columns, insideName.c_str()));
-        side.valid = side.inside &&
-            std::isfinite(side.x01) && std::isfinite(side.y01) &&
-            side.x01 >= 0.0f && side.x01 <= 1.0f &&
-            side.y01 >= 0.0f && side.y01 <= 1.0f;
+        side.valid = side.inside && std::isfinite(side.x01) && std::isfinite(side.y01) &&
+            side.x01 >= 0.0f && side.x01 <= 1.0f && side.y01 >= 0.0f && side.y01 <= 1.0f;
         return side;
     }
 
@@ -253,10 +238,7 @@ public:
             pending_.erase(0, newline + 1);
             if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.empty()) continue;
-            if (!headerSkipped_) {
-                headerSkipped_ = true;
-                continue;
-            }
+            if (!headerSkipped_) { headerSkipped_ = true; continue; }
             ++count_;
         }
     }
@@ -271,29 +253,20 @@ private:
     std::uint64_t count_ = 0;
 };
 
-std::filesystem::path FindFileBySuffix(
-    const std::filesystem::path& directory,
-    const std::string& suffix)
+std::filesystem::path FindFileBySuffix(const std::filesystem::path& directory, const std::string& suffix)
 {
     if (directory.empty()) return {};
     std::error_code error;
     if (!std::filesystem::is_directory(directory, error)) return {};
-
     std::filesystem::path best;
     std::filesystem::file_time_type bestTime{};
     for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
         if (error) break;
         if (!entry.is_regular_file(error)) continue;
         const auto name = entry.path().filename().string();
-        if (name.size() < suffix.size() ||
-            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
-            continue;
-        }
+        if (name.size() < suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
         const auto time = entry.last_write_time(error);
-        if (best.empty() || (!error && time > bestTime)) {
-            best = entry.path();
-            bestTime = time;
-        }
+        if (best.empty() || (!error && time > bestTime)) { best = entry.path(); bestTime = time; }
     }
     return best;
 }
@@ -305,10 +278,8 @@ public:
         values_.push_back(value);
         if (values_.size() > capacity_) values_.pop_front();
     }
-
     const std::deque<float>& values() const noexcept { return values_; }
     float latest() const noexcept { return values_.empty() ? 0.0f : values_.back(); }
-
 private:
     std::deque<float> values_;
     std::size_t capacity_ = 90;
@@ -333,30 +304,24 @@ public:
         if (now - lastFileScan_ > std::chrono::seconds(1)) {
             lastFileScan_ = now;
             const auto dir = VstLoadServiceHook::outputDirectory();
-            codecLeft_.setPath(FindFileBySuffix(dir, "_left_raw_metadata.csv"));
-            codecRight_.setPath(FindFileBySuffix(dir, "_right_raw_metadata.csv"));
+            codecLeftCounter_.setPath(FindFileBySuffix(dir, "_left_raw_metadata.csv"));
+            codecRightCounter_.setPath(FindFileBySuffix(dir, "_right_raw_metadata.csv"));
         }
-        codecLeft_.refresh();
-        codecRight_.refresh();
+        codecLeftCounter_.refresh();
+        codecRightCounter_.refresh();
 
         const auto camera = GuiPerformanceStats::CameraReadFrames();
         CounterSnapshot current{};
         current.cameraLeft = camera.left;
         current.cameraRight = camera.right;
-        current.codecLeft = codecLeft_.count();
-        current.codecRight = codecRight_.count();
+        current.codecLeft = codecLeftCounter_.count();
+        current.codecRight = codecRightCounter_.count();
         current.vstLeft = VstLoadServiceHook::leftReceivedCount();
         current.vstRight = VstLoadServiceHook::rightReceivedCount();
         current.eye = EyeTrackerLoadServiceHook::receivedSampleCount();
         current.imu = ImuLoadServiceHook::receivedCount();
 
-        if (!hasPrevious_) {
-            previous_ = current;
-            previousTime_ = now;
-            hasPrevious_ = true;
-            return;
-        }
-
+        if (!hasPrevious_) { previous_ = current; previousTime_ = now; hasPrevious_ = true; return; }
         const double dt = std::chrono::duration<double>(now - previousTime_).count();
         if (dt < 0.5) return;
 
@@ -368,19 +333,11 @@ public:
         vstRight.push(rate(previous_.vstRight, current.vstRight, dt));
         eye.push(rate(previous_.eye, current.eye, dt));
         imu.push(rate(previous_.imu, current.imu, dt));
-
         previous_ = current;
         previousTime_ = now;
     }
 
-    RateHistory cameraLeft;
-    RateHistory cameraRight;
-    RateHistory codecLeft;
-    RateHistory codecRight;
-    RateHistory vstLeft;
-    RateHistory vstRight;
-    RateHistory eye;
-    RateHistory imu;
+    RateHistory cameraLeft, cameraRight, codecLeft, codecRight, vstLeft, vstRight, eye, imu;
 
 private:
     static float rate(std::uint64_t previous, std::uint64_t current, double dt) noexcept
@@ -388,42 +345,22 @@ private:
         if (current < previous || dt <= 0.0) return 0.0f;
         return static_cast<float>(static_cast<double>(current - previous) / dt);
     }
-
-    LineTailCounter codecLeft_;
-    LineTailCounter codecRight_;
+    LineTailCounter codecLeftCounter_;
+    LineTailCounter codecRightCounter_;
     bool hasPrevious_ = false;
     CounterSnapshot previous_{};
     Clock::time_point previousTime_{};
     Clock::time_point lastFileScan_{};
 };
 
-CsvTailReader& Reader()
-{
-    static CsvTailReader reader;
-    return reader;
-}
+CsvTailReader& Reader() { static CsvTailReader reader; return reader; }
+PerformancePanelState& Performance() { static PerformancePanelState value; return value; }
+int& ImageSideIndex() { static thread_local int value = 0; return value; }
 
-PerformancePanelState& Performance()
-{
-    static PerformancePanelState value;
-    return value;
-}
-
-int& ImageSideIndex()
-{
-    static thread_local int value = 0;
-    return value;
-}
-
-void DrawGazePoint(
-    const SideSample& side,
-    const ImVec2& imageMin,
-    const ImVec2& imageSize)
+void DrawGazePoint(const SideSample& side, const ImVec2& imageMin, const ImVec2& imageSize)
 {
     if (!side.valid) return;
-    const ImVec2 center(
-        imageMin.x + side.x01 * imageSize.x,
-        imageMin.y + side.y01 * imageSize.y);
+    const ImVec2 center(imageMin.x + side.x01 * imageSize.x, imageMin.y + side.y01 * imageSize.y);
     ImDrawList* draw = ImGui::GetWindowDrawList();
     constexpr float radius = 8.0f;
     draw->AddCircleFilled(center, radius + 3.0f, IM_COL32(0, 0, 0, 220), 32);
@@ -447,37 +384,6 @@ void RequestApplicationExitFromGui()
     SendInput(2, inputs, sizeof(INPUT));
 }
 
-BOOL GazeOverlayDestroyWindow(HWND window)
-{
-    RequestApplicationExitFromGui();
-    return ::DestroyWindow(window);
-}
-
-void BeginFrame()
-{
-    ImageSideIndex() = 0;
-    Reader().refresh();
-    Performance().update();
-}
-
-void DrawImageWithLatestGaze(
-    ImTextureRef texture,
-    const ImVec2& imageSize)
-{
-    const ImVec2 imageMin = ImGui::GetCursorScreenPos();
-    ImGui::Image(texture, imageSize);
-
-    const auto& latest = Reader().latest();
-    if (!latest) {
-        ImageSideIndex() = (ImageSideIndex() + 1) % 2;
-        return;
-    }
-
-    const int sideIndex = ImageSideIndex();
-    ImageSideIndex() = (ImageSideIndex() + 1) % 2;
-    DrawGazePoint(sideIndex == 0 ? latest->left : latest->right, imageMin, imageSize);
-}
-
 float MaxHistoryValue(const std::deque<float>& a, const std::deque<float>& b)
 {
     float value = 1.0f;
@@ -486,13 +392,7 @@ float MaxHistoryValue(const std::deque<float>& a, const std::deque<float>& b)
     return value;
 }
 
-void DrawOneLine(
-    ImDrawList* draw,
-    const ImVec2& min,
-    const ImVec2& size,
-    const std::deque<float>& values,
-    float maxValue,
-    ImU32 color)
+void DrawOneLine(ImDrawList* draw, const ImVec2& min, const ImVec2& size, const std::deque<float>& values, float maxValue, ImU32 color)
 {
     if (!draw || values.size() < 2 || maxValue <= 0.0f) return;
     const std::size_t count = values.size();
@@ -507,13 +407,7 @@ void DrawOneLine(
     }
 }
 
-void DrawRateGraph(
-    const char* title,
-    const RateHistory& left,
-    const char* leftLabel,
-    const RateHistory* right,
-    const char* rightLabel,
-    float height)
+void DrawRateGraph(const char* title, const RateHistory& left, const char* leftLabel, const RateHistory* right, const char* rightLabel, float height)
 {
     ImGui::Text("%s", title);
     const ImVec2 graphMin = ImGui::GetCursorScreenPos();
@@ -528,49 +422,31 @@ void DrawRateGraph(
     DrawOneLine(draw, graphMin, graphSize, left.values(), maxValue, leftColor);
     if (right) DrawOneLine(draw, graphMin, graphSize, right->values(), maxValue, rightColor);
     ImGui::Dummy(graphSize);
-    if (right) {
-        ImGui::Text("%s %.1f fps   %s %.1f fps   max %.1f", leftLabel, left.latest(), rightLabel, right->latest(), maxValue);
-    } else {
-        ImGui::Text("%s %.1f /s   max %.1f", leftLabel, left.latest(), maxValue);
-    }
+    if (right) ImGui::Text("%s %.1f fps   %s %.1f fps   max %.1f", leftLabel, left.latest(), rightLabel, right->latest(), maxValue);
+    else ImGui::Text("%s %.1f /s   max %.1f", leftLabel, left.latest(), maxValue);
     ImGui::Spacing();
 }
 
 void DrawControlPanel()
 {
     ImGui::TextUnformatted("Plane controls");
-    if (ImGui::Button("Up", ImVec2(80, 28))) GuiControlBridge::RequestMoveUp();
-    ImGui::SameLine();
-    if (ImGui::Button("Down", ImVec2(80, 28))) GuiControlBridge::RequestMoveDown();
-    ImGui::SameLine();
-    if (ImGui::Button("Left", ImVec2(80, 28))) GuiControlBridge::RequestMoveLeft();
-    ImGui::SameLine();
+    if (ImGui::Button("Up", ImVec2(80, 28))) GuiControlBridge::RequestMoveUp(); ImGui::SameLine();
+    if (ImGui::Button("Down", ImVec2(80, 28))) GuiControlBridge::RequestMoveDown(); ImGui::SameLine();
+    if (ImGui::Button("Left", ImVec2(80, 28))) GuiControlBridge::RequestMoveLeft(); ImGui::SameLine();
     if (ImGui::Button("Right", ImVec2(80, 28))) GuiControlBridge::RequestMoveRight();
-
-    if (ImGui::Button("Size +", ImVec2(80, 28))) GuiControlBridge::RequestSizeIncrease();
-    ImGui::SameLine();
-    if (ImGui::Button("Size -", ImVec2(80, 28))) GuiControlBridge::RequestSizeDecrease();
-    ImGui::SameLine();
-    if (ImGui::Button("Near", ImVec2(80, 28))) GuiControlBridge::RequestMoveNear();
-    ImGui::SameLine();
+    if (ImGui::Button("Size +", ImVec2(80, 28))) GuiControlBridge::RequestSizeIncrease(); ImGui::SameLine();
+    if (ImGui::Button("Size -", ImVec2(80, 28))) GuiControlBridge::RequestSizeDecrease(); ImGui::SameLine();
+    if (ImGui::Button("Near", ImVec2(80, 28))) GuiControlBridge::RequestMoveNear(); ImGui::SameLine();
     if (ImGui::Button("Far", ImVec2(80, 28))) GuiControlBridge::RequestMoveFar();
-
     const bool visible = GuiControlBridge::PlaneVisible();
-    if (ImGui::Button(visible ? "Hide Plane" : "Show Plane", ImVec2(170, 30))) {
-        GuiControlBridge::RequestTogglePlaneVisibility();
-    }
+    if (ImGui::Button(visible ? "Hide Plane" : "Show Plane", ImVec2(170, 30))) GuiControlBridge::RequestTogglePlaneVisibility();
     ImGui::SameLine();
     bool locked = GuiControlBridge::KeyboardControlLocked();
-    if (ImGui::Checkbox("Keyboard operation lock", &locked)) {
-        GuiControlBridge::SetKeyboardControlLocked(locked);
-    }
+    if (ImGui::Checkbox("Keyboard operation lock", &locked)) GuiControlBridge::SetKeyboardControlLocked(locked);
     ImGui::TextWrapped("When Plane is hidden, the VST postprocess mask becomes pass-through. F23 reveal remains available while keyboard operations are locked.");
-
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(160, 50, 50, 255));
-    if (ImGui::Button("Exit application", ImVec2(180, 32))) {
-        RequestApplicationExitFromGui();
-    }
+    if (ImGui::Button("Exit application", ImVec2(180, 32))) RequestApplicationExitFromGui();
     ImGui::PopStyleColor();
 }
 
@@ -594,11 +470,7 @@ void DrawGuiPanels()
     const float videoHeight = std::max(240.0f, workSize.y * 0.68f);
     const float controlsHeight = std::max(160.0f, workSize.y - videoHeight);
     const float rightWidth = std::max(320.0f, workSize.x - leftWidth);
-
-    ImGuiWindowFlags panelFlags =
-        ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoSavedSettings;
+    const ImGuiWindowFlags panelFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings;
 
     ImGui::SetNextWindowPos(ImVec2(workPos.x, workPos.y + videoHeight));
     ImGui::SetNextWindowSize(ImVec2(leftWidth, controlsHeight));
@@ -613,6 +485,26 @@ void DrawGuiPanels()
     ImGui::End();
 }
 
+} // namespace
+
+void BeginFrame()
+{
+    ImageSideIndex() = 0;
+    Reader().refresh();
+    Performance().update();
+}
+
+void DrawImageWithLatestGaze(ImTextureRef texture, const ImVec2& imageSize)
+{
+    const ImVec2 imageMin = ImGui::GetCursorScreenPos();
+    ImGui::Image(texture, imageSize);
+    const auto& latest = Reader().latest();
+    if (!latest) { ImageSideIndex() = (ImageSideIndex() + 1) % 2; return; }
+    const int sideIndex = ImageSideIndex();
+    ImageSideIndex() = (ImageSideIndex() + 1) % 2;
+    DrawGazePoint(sideIndex == 0 ? latest->left : latest->right, imageMin, imageSize);
+}
+
 ImVec2 PreviewContentRegionAvail()
 {
     const ImVec2 real = ImGui::GetContentRegionAvail();
@@ -625,31 +517,10 @@ void RenderWithPanels()
     ImGui::Render();
 }
 
-} // namespace
-
-void BeginFrame()
+BOOL GazeOverlayDestroyWindow(HWND window)
 {
-    ImageSideIndex() = 0;
-    Reader().refresh();
-    Performance().update();
-}
-
-void DrawImageWithLatestGaze(
-    ImTextureRef texture,
-    const ImVec2& imageSize)
-{
-    const ImVec2 imageMin = ImGui::GetCursorScreenPos();
-    ImGui::Image(texture, imageSize);
-
-    const auto& latest = Reader().latest();
-    if (!latest) {
-        ImageSideIndex() = (ImageSideIndex() + 1) % 2;
-        return;
-    }
-
-    const int sideIndex = ImageSideIndex();
-    ImageSideIndex() = (ImageSideIndex() + 1) % 2;
-    DrawGazePoint(sideIndex == 0 ? latest->left : latest->right, imageMin, imageSize);
+    RequestApplicationExitFromGui();
+    return ::DestroyWindow(window);
 }
 
 } // namespace DualIC4Varjo::ImGuiGazeOverlay
@@ -662,9 +533,7 @@ void GazeOverlayNewFrame()
     ImGui::NewFrame();
 }
 
-void GazeOverlayImage(
-    ImTextureRef texture,
-    const ImVec2& imageSize)
+void GazeOverlayImage(ImTextureRef texture, const ImVec2& imageSize)
 {
     DualIC4Varjo::ImGuiGazeOverlay::DrawImageWithLatestGaze(texture, imageSize);
 }
