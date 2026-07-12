@@ -7,6 +7,7 @@
 #define NOMINMAX
 #endif
 
+#include "GuiControlBridge.hpp"
 #include "RawStereoNvencRecordingIntegration.hpp"
 #include "VarjoFadeOutPostProcess.hpp"
 
@@ -38,8 +39,8 @@ namespace detail {
 inline glm::mat4 Mat4FromArray(const double values[16]) noexcept
 {
     glm::mat4 out(1.0f);
-    for (int i = 0; i < 16; ++i) {
-        glm::value_ptr(out)[i] = static_cast<float>(values[i]);
+    for (int index = 0; index < 16; ++index) {
+        glm::value_ptr(out)[index] = static_cast<float>(values[index]);
     }
     return out;
 }
@@ -88,6 +89,18 @@ inline glm::mat4 PlaneWorldMatrix(
     return local;
 }
 
+inline VarjoFadeOutPostProcess::PlaneMaskRects FullScreenPassThroughRects() noexcept
+{
+    VarjoFadeOutPostProcess::PlaneMaskRects rects{};
+    for (auto& rect : rects) {
+        rect.x0 = 0.0f;
+        rect.y0 = 0.0f;
+        rect.x1 = 1.0f;
+        rect.y1 = 1.0f;
+    }
+    return rects;
+}
+
 inline VarjoFadeOutPostProcess::PlaneMaskRects ProjectPlaneRects(
     const VarjoXR::XRPlane& plane,
     const VarjoFrameInfoSnapshot& snapshot)
@@ -105,7 +118,8 @@ inline VarjoFadeOutPostProcess::PlaneMaskRects ProjectPlaneRects(
         { 0.5f, -0.5f, 0.0f, 1.0f},
     };
 
-    const std::size_t viewCount = std::min<std::size_t>(snapshot.views.size(), rects.size());
+    const std::size_t viewCount =
+        std::min<std::size_t>(snapshot.views.size(), rects.size());
     for (std::size_t viewIndex = 0; viewIndex < viewCount; ++viewIndex) {
         const auto& view = snapshot.views[viewIndex];
         const glm::mat4 viewMatrix = Mat4FromArray(view.viewMatrix);
@@ -141,14 +155,12 @@ inline VarjoFadeOutPostProcess::PlaneMaskRects ProjectPlaneRects(
 
         if (!valid) continue;
 
-        // Keep the mask tight to the projected Plane corners. Earlier versions
-        // used a 0.01 normalized margin, which was visibly too large in Varjo
-        // focus/context postprocess output.
-        constexpr float kMaskMargin01 = 0.0f;
-        rects[viewIndex].x0 = std::clamp(minX - kMaskMargin01, 0.0f, 1.0f);
-        rects[viewIndex].y0 = std::clamp(minY - kMaskMargin01, 0.0f, 1.0f);
-        rects[viewIndex].x1 = std::clamp(maxX + kMaskMargin01, 0.0f, 1.0f);
-        rects[viewIndex].y1 = std::clamp(maxY + kMaskMargin01, 0.0f, 1.0f);
+        // The Plane mask intentionally has no extra margin. Its four projected
+        // corners must match the actual Plane bounds in context/focus views.
+        rects[viewIndex].x0 = std::clamp(minX, 0.0f, 1.0f);
+        rects[viewIndex].y0 = std::clamp(minY, 0.0f, 1.0f);
+        rects[viewIndex].x1 = std::clamp(maxX, 0.0f, 1.0f);
+        rects[viewIndex].y1 = std::clamp(maxY, 0.0f, 1.0f);
     }
 
     return rects;
@@ -171,26 +183,24 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         session_ = std::move(session);
         commandQueue_ = commandQueue;
-        std::cout << "[FADE] runtime registered for VST fade-out postprocess\n";
+        std::cout << "[VST_POSTPROCESS] runtime registered\n";
     }
 
-    bool initializeAfterCalibration()
+    bool initializeWhenPlaneAvailable()
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        postCalibrationActive_.store(true, std::memory_order_release);
         if (postProcess_) return true;
         if (!session_) {
             lastError_ = "video postprocess runtime session was not registered";
-            std::cerr << "[VST_POSTPROCESS] initialization skipped: " << lastError_ << '\n';
             return false;
         }
         if (!commandQueue_) {
             lastError_ = "video postprocess runtime D3D12 queue was not registered";
-            std::cerr << "[VST_POSTPROCESS] initialization skipped: " << lastError_ << '\n';
             return false;
         }
 
-        std::cout << "[VST_POSTPROCESS] initializing video postprocess\n";
+        std::cout
+            << "[VST_POSTPROCESS] initializing when the Plane becomes visible\n";
         VarjoFadeOutPostProcess::Config config{};
         config.fadeSeconds = 2.0f;
         auto postProcess = std::make_unique<VarjoFadeOutPostProcess>(
@@ -199,60 +209,72 @@ public:
             config);
         if (!postProcess->initialize()) {
             lastError_ = postProcess->lastError();
-            std::cerr << "[VST_POSTPROCESS] initialization failed: " << lastError_ << '\n';
+            std::cerr
+                << "[VST_POSTPROCESS] initialization failed: "
+                << lastError_ << '\n';
             return false;
         }
 
         postProcess_ = std::move(postProcess);
         lastError_.clear();
         std::cout
-            << "[VST_POSTPROCESS] post-calibration shader ready; "
-            << "Plane outside region will become green, Esc switches to fade-out\n";
+            << "[VST_POSTPROCESS] Plane-time blur+darken shader ready; "
+            << "Esc/GUI/Ctrl+C switches to full-screen fade-out\n";
         return true;
     }
 
     void updatePlaneMask(const VarjoFadeOutPostProcess::PlaneMaskRects& rects)
     {
-        if (!postCalibrationActive_.load(std::memory_order_acquire)) return;
         if (fadeStarted_.load(std::memory_order_acquire)) return;
+
+        if (!initializeWhenPlaneAvailable()) {
+            printMaskWarningOnce();
+            return;
+        }
 
         VarjoFadeOutPostProcess* postProcess = nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             postProcess = postProcess_.get();
         }
-        if (!postProcess) {
-            if (!initializeAfterCalibration()) return;
-            std::lock_guard<std::mutex> lock(mutex_);
-            postProcess = postProcess_.get();
-        }
         if (!postProcess) return;
 
-        if (!postProcess->updateGreenOutsidePlane(rects)) {
-            const std::string error = postProcess->lastError();
-            std::lock_guard<std::mutex> lock(mutex_);
-            lastError_ = error;
-            if (!planeMaskWarningPrinted_) {
-                planeMaskWarningPrinted_ = true;
-                std::cerr
-                    << "[VST_POSTPROCESS] failed to update green Plane mask: "
-                    << lastError_ << '\n';
+        const bool visible = GuiControlBridge::PlaneVisible();
+        const auto appliedRects = visible
+            ? rects
+            : detail::FullScreenPassThroughRects();
+
+        if (!postProcess->updateGreenOutsidePlane(appliedRects)) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                lastError_ = postProcess->lastError();
             }
+            printMaskWarningOnce();
             return;
         }
 
-        if (!planeMaskRectPrinted_) {
+        if (!planeMaskRectPrinted_ && visible) {
             planeMaskRectPrinted_ = true;
-            const auto& r0 = rects[0];
-            const auto& r1 = rects[1];
+            const auto& left = appliedRects[0];
+            const auto& right = appliedRects[1];
             std::cout
                 << "[VST_POSTPROCESS] initial Plane mask rects "
-                << "view0=(" << r0.x0 << ',' << r0.y0 << ',' << r0.x1 << ',' << r0.y1 << ") "
-                << "view1=(" << r1.x0 << ',' << r1.y0 << ',' << r1.x1 << ',' << r1.y1 << ")\n";
+                << "view0=(" << left.x0 << ',' << left.y0 << ','
+                << left.x1 << ',' << left.y1 << ") "
+                << "view1=(" << right.x0 << ',' << right.y0 << ','
+                << right.x1 << ',' << right.y1 << ")\n";
+        }
+
+        if (!visible && !hiddenPassThroughLogged_) {
+            hiddenPassThroughLogged_ = true;
+            std::cout
+                << "[VST_POSTPROCESS] Plane hidden; VST postprocess is pass-through\n";
+        } else if (visible) {
+            hiddenPassThroughLogged_ = false;
         }
     }
 
-    bool startEscFadeOut()
+    bool startFadeOut(const char* trigger)
     {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -260,7 +282,7 @@ public:
             if (fadeStarted_.load(std::memory_order_acquire)) return true;
         }
 
-        if (!initializeAfterCalibration()) {
+        if (!initializeWhenPlaneAvailable()) {
             shutdownReady_.store(true, std::memory_order_release);
             return false;
         }
@@ -269,7 +291,7 @@ public:
         if (shutdownReady_.load(std::memory_order_acquire)) return true;
         if (fadeStarted_.load(std::memory_order_acquire)) return true;
         if (!postProcess_) {
-            lastError_ = "video postprocess was not initialized after calibration";
+            lastError_ = "video postprocess was not initialized";
             shutdownReady_.store(true, std::memory_order_release);
             return false;
         }
@@ -283,7 +305,8 @@ public:
 
         fadeStarted_.store(true, std::memory_order_release);
         std::cout
-            << "[FADE] Esc detected; Plane hidden and VST fade-out started (2.0 s)\n";
+            << "[FADE] " << (trigger ? trigger : "shutdown")
+            << " requested; Plane hidden and VST blur+darken fade-out started (2.0 s)\n";
         return true;
     }
 
@@ -297,36 +320,56 @@ public:
         std::cout << "[FADE] Varjo Plane made transparent for shutdown fade\n";
     }
 
+    bool shutdownReady()
+    {
+        if (shutdownReady_.load(std::memory_order_acquire)) return true;
+        if (!fadeStarted_.load(std::memory_order_acquire)) return false;
+
+        bool completed = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            completed = postProcess_ && postProcess_->completed();
+        }
+        if (completed) {
+            const bool wasReady = shutdownReady_.exchange(
+                true,
+                std::memory_order_acq_rel);
+            if (!wasReady) {
+                std::cout << "[FADE] fade-out completed; shutdown may proceed\n";
+            }
+            return true;
+        }
+        return false;
+    }
+
     SHORT handleEscapeGetAsyncKeyState()
     {
         const SHORT physicalState = ::GetAsyncKeyState(VK_ESCAPE);
         const bool physicalEscDown = (physicalState & 0x8000) != 0;
+        const bool externalExitRequested =
+            GuiControlBridge::ApplicationExitRequested();
 
-        if (shutdownReady_.load(std::memory_order_acquire)) {
+        if (shutdownReady()) {
             return static_cast<SHORT>(0x8000);
         }
 
-        if (physicalEscDown && !fadeStarted_.load(std::memory_order_acquire)) {
-            if (!startEscFadeOut()) {
-                std::cerr << "[FADE] failed to start fade-out: " << lastError()
-                          << " ; falling back to immediate shutdown\n";
-                return physicalState;
+        if ((physicalEscDown || externalExitRequested) &&
+            !fadeStarted_.load(std::memory_order_acquire)) {
+            const char* trigger = physicalEscDown
+                ? "Esc"
+                : "GUI/console";
+            if (!startFadeOut(trigger)) {
+                std::cerr
+                    << "[FADE] failed to start fade-out: "
+                    << lastError()
+                    << " ; falling back to immediate shutdown\n";
+                return static_cast<SHORT>(0x8000);
             }
             return 0;
         }
 
         if (fadeStarted_.load(std::memory_order_acquire)) {
-            bool completed = false;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                completed = postProcess_ && postProcess_->completed();
-            }
-            if (completed) {
-                shutdownReady_.store(true, std::memory_order_release);
-                std::cout << "[FADE] fade-out completed; shutdown may proceed\n";
-                return static_cast<SHORT>(0x8000);
-            }
-            return 0;
+            return shutdownReady() ? static_cast<SHORT>(0x8000) : 0;
         }
 
         return physicalState;
@@ -334,15 +377,16 @@ public:
 
     void waitForFadeCompletion()
     {
-        std::lock_guard<std::mutex> lock(waitMutex_);
+        std::lock_guard<std::mutex> waitLock(waitMutex_);
         if (!fadeStarted_.load(std::memory_order_acquire)) return;
+
         VarjoFadeOutPostProcess* postProcess = nullptr;
         {
-            std::lock_guard<std::mutex> lock2(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
             postProcess = postProcess_.get();
         }
         if (postProcess) postProcess->waitForCompletion();
-        shutdownReady_.store(true, std::memory_order_release);
+        shutdownReady();
     }
 
     void stop() noexcept
@@ -352,9 +396,7 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             postProcess = std::move(postProcess_);
         }
-        if (postProcess) {
-            postProcess->stop();
-        }
+        if (postProcess) postProcess->stop();
     }
 
     std::string lastError() const
@@ -366,17 +408,27 @@ public:
 private:
     Manager() = default;
 
+    void printMaskWarningOnce()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (planeMaskWarningPrinted_) return;
+        planeMaskWarningPrinted_ = true;
+        std::cerr
+            << "[VST_POSTPROCESS] failed to update Plane blur+darken mask: "
+            << lastError_ << '\n';
+    }
+
     mutable std::mutex mutex_;
     std::mutex waitMutex_;
     std::shared_ptr<varjo_Session> session_;
     ID3D12CommandQueue* commandQueue_ = nullptr;
     std::unique_ptr<VarjoFadeOutPostProcess> postProcess_;
-    std::atomic_bool postCalibrationActive_{false};
     std::atomic_bool fadeStarted_{false};
     std::atomic_bool shutdownReady_{false};
     std::atomic_bool planeTransparentRequested_{false};
     bool planeMaskWarningPrinted_ = false;
     bool planeMaskRectPrinted_ = false;
+    bool hiddenPassThroughLogged_ = false;
     std::string lastError_;
 };
 
@@ -387,9 +439,16 @@ inline void RegisterRuntime(
     Manager::instance().registerRuntime(std::move(session), commandQueue);
 }
 
+inline bool InitializeWhenPlaneAvailable()
+{
+    return Manager::instance().initializeWhenPlaneAvailable();
+}
+
+// Compatibility alias for the logger integration. The render thread normally
+// initializes the shader earlier, on the first Plane frame.
 inline bool InitializeAfterCalibration()
 {
-    return Manager::instance().initializeAfterCalibration();
+    return InitializeWhenPlaneAvailable();
 }
 
 inline void UpdatePlaneMaskFromFrame(
@@ -402,6 +461,21 @@ inline void UpdatePlaneMaskFromFrame(
 inline void ApplyPlaneFadeVisibility(VarjoXR::XRPlane& plane)
 {
     Manager::instance().applyPlaneVisibility(plane);
+}
+
+inline bool RequestGracefulShutdown(const char* trigger)
+{
+    return Manager::instance().startFadeOut(trigger);
+}
+
+inline bool ShutdownReady()
+{
+    return Manager::instance().shutdownReady();
+}
+
+inline void WaitForFadeCompletion()
+{
+    Manager::instance().waitForFadeCompletion();
 }
 
 inline SHORT GetAsyncKeyState(int virtualKey)
@@ -417,12 +491,12 @@ public:
     bool start(const std::filesystem::path& path)
     {
         if (!inner_.start(path)) return false;
-        if (!InitializeAfterCalibration()) {
+        if (!InitializeWhenPlaneAvailable()) {
             startupWarning_ = Manager::instance().lastError();
             std::cerr
                 << "[VST_POSTPROCESS] warning: postprocess is not ready yet: "
                 << startupWarning_
-                << " ; recording/rendering will continue and render thread will retry Plane mask updates\n";
+                << " ; rendering continues and the Plane-mask hook will retry\n";
         }
         return true;
     }
@@ -454,4 +528,4 @@ private:
 namespace DualIC4Varjo {
 using FadeOutRenderedFrameMetadataLogger =
     FadeOutPostProcessIntegration::FadeOutRenderedFrameMetadataLogger;
-}
+} // namespace DualIC4Varjo
