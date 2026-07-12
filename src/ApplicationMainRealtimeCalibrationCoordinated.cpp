@@ -32,8 +32,9 @@
 
 // Register the Plane immediately after XRSpace::createPlane() returns. The
 // render-token replacement applies keyboard input on the Varjo render thread,
-// and the fade visibility hook forces the Plane transparent during shutdown
-// fade-out without mutating XRPlane from the main thread.
+// updates the VST postprocess mask from the same frame's Plane projection, and
+// forces the Plane transparent during shutdown fade-out without mutating XRPlane
+// from the main thread.
 #define createPlane(...) createPlane(__VA_ARGS__); \
     DualIC4Varjo::CalibrationRuntimeBridge::RegisterPlane(plane); \
     DualIC4Varjo::FadeOutPostProcessIntegration::RegisterRuntime( \
@@ -41,6 +42,8 @@
 #define render() render(); \
     DualIC4Varjo::PostProcessDefaultOverrides::ApplyOnce(); \
     DualIC4Varjo::CalibrationRuntimeBridge::ApplyPlaneInputAfterRender(plane); \
+    DualIC4Varjo::FadeOutPostProcessIntegration::UpdatePlaneMaskFromFrame( \
+        plane, d3dBackend.frameInfoSnapshot()); \
     DualIC4Varjo::FadeOutPostProcessIntegration::ApplyPlaneFadeVisibility(plane)
 
 // Keep the original Q/R/Esc termination semantics, but move the OpenCV window
