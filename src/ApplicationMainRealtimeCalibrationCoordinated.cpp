@@ -12,6 +12,7 @@
 #include "GracefulShutdownIntegration.hpp"
 #include "GuiPerformanceStats.hpp"
 #include "GuiPlaneControlIntegration.hpp"
+#include "KeyboardLockIntegration.hpp"
 #include "PostProcessDefaultOverrides.hpp"
 
 // The included application defines these macros itself. Undefine them here to
@@ -36,8 +37,10 @@
         add)
 
 // Intercept only calls inside the included application translation unit. Esc,
-// GUI Exit, ImGui window close, and Ctrl+C all enter the same two-second fade.
-#define GetAsyncKeyState DualIC4Varjo::FadeOutPostProcessIntegration::GetAsyncKeyState
+// GUI Exit, ImGui window close, and Ctrl+C all enter the same two-second fade;
+// ordinary keyboard Plane operations are suppressed while the GUI keyboard lock
+// is enabled. The postprocess reveal key remains handled by the runtime bridge.
+#define GetAsyncKeyState DualIC4Varjo::KeyboardLockIntegration::GetAsyncKeyState
 
 // Register the Plane immediately after XRSpace::createPlane() returns. The
 // render-token replacement applies GUI/keyboard input on the Varjo render thread,
