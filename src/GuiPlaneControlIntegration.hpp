@@ -19,66 +19,18 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
-#include <optional>
 
 namespace DualIC4Varjo::GuiPlaneControlIntegration {
 namespace detail {
 
-inline std::optional<glm::vec2>& HiddenSavedSize()
-{
-    static thread_local std::optional<glm::vec2> value;
-    return value;
-}
-
-inline void ApplyPlaneAlpha(VarjoXR::XRPlane& plane, bool visible)
-{
-    plane.setTint({1.0f, 1.0f, 1.0f, visible ? 1.0f : 0.0f});
-}
-
 inline void ApplyVisibleState(VarjoXR::XRPlane& plane, bool visible)
 {
-    auto& savedSize = HiddenSavedSize();
-    if (visible) {
-        if (savedSize) {
-            plane.setSize(*savedSize);
-            savedSize.reset();
-        }
-        ApplyPlaneAlpha(plane, true);
-    } else {
-        if (!savedSize) {
-            savedSize = plane.size();
-        }
-        // Keep the invisible Plane geometry large enough to cover all views, so
-        // the VST postprocess mask becomes full-screen pass-through while the
-        // Plane is hidden. The saved visible size is restored when shown again.
-        plane.setSize({1000.0f, 1000.0f});
-        ApplyPlaneAlpha(plane, false);
-    }
+    // VST pass-through is now selected explicitly by
+    // FadeOutPostProcessIntegration from GuiControlBridge::PlaneVisible(). Keep
+    // the real Plane geometry unchanged while it is hidden so metadata and later
+    // size/depth edits continue to describe the actual Plane.
+    plane.setTint({1.0f, 1.0f, 1.0f, visible ? 1.0f : 0.0f});
     GuiControlBridge::SetPlaneVisible(visible);
-}
-
-inline glm::vec2& EditablePlaneSize(VarjoXR::XRPlane& plane)
-{
-    auto& savedSize = HiddenSavedSize();
-    if (!GuiControlBridge::PlaneVisible() && savedSize) {
-        return *savedSize;
-    }
-    // This function cannot return plane.size() by reference. Callers must write
-    // the returned copy back through SetEditablePlaneSize().
-    static thread_local glm::vec2 scratch;
-    scratch = plane.size();
-    return scratch;
-}
-
-inline void SetEditablePlaneSize(VarjoXR::XRPlane& plane, glm::vec2 size)
-{
-    auto& savedSize = HiddenSavedSize();
-    if (!GuiControlBridge::PlaneVisible() && savedSize) {
-        *savedSize = size;
-        plane.setSize({1000.0f, 1000.0f});
-        return;
-    }
-    plane.setSize(size);
 }
 
 inline bool ApplyMoveResizeDepth(
@@ -111,22 +63,28 @@ inline bool ApplyMoveResizeDepth(
         changed = true;
     }
 
-    const float depthDelta = static_cast<float>(nearSteps - farSteps) * moveStep;
+    const float depthDelta =
+        static_cast<float>(nearSteps - farSteps) * moveStep;
     if (depthDelta != 0.0f) {
-        const float newZ = (std::min)(-minimumDistance, position.z + depthDelta);
+        const float newZ = (std::min)(
+            -minimumDistance,
+            position.z + depthDelta);
         if (newZ != position.z) {
             position.z = newZ;
             changed = true;
         }
     }
 
-    const float widthDelta = static_cast<float>(sizeUpSteps - sizeDownSteps) * resizeStep;
+    const float widthDelta =
+        static_cast<float>(sizeUpSteps - sizeDownSteps) * resizeStep;
     if (widthDelta != 0.0f) {
-        const glm::vec2 size = EditablePlaneSize(plane);
+        const glm::vec2 size = plane.size();
         if (size.x > 0.0f && size.y > 0.0f) {
-            const float newWidth = (std::max)(minimumWidth, size.x + widthDelta);
+            const float newWidth = (std::max)(
+                minimumWidth,
+                size.x + widthDelta);
             if (newWidth != size.x) {
-                SetEditablePlaneSize(plane, {newWidth, newWidth * (size.y / size.x)});
+                plane.setSize({newWidth, newWidth * (size.y / size.x)});
                 changed = true;
             }
         }
@@ -135,18 +93,22 @@ inline bool ApplyMoveResizeDepth(
     return changed;
 }
 
-inline void PrintPlaneState(const char* reason, const VarjoXR::XRPlane& plane)
+inline void PrintPlaneState(
+    const char* reason,
+    const VarjoXR::XRPlane& plane)
 {
-    const glm::vec2 visibleSize = HiddenSavedSize().value_or(plane.size());
+    const glm::vec2 size = plane.size();
     const auto& position = plane.transform().position;
     std::cout << std::fixed << std::setprecision(3)
-              << "[PLANE][" << (reason ? reason : "GUI") << "] x=" << position.x
+              << "[PLANE][" << (reason ? reason : "GUI") << "] x="
+              << position.x
               << " m, y=" << position.y
               << " m, z=" << position.z
               << " m, distance=" << (std::max)(0.0f, -position.z)
-              << " m, width=" << visibleSize.x
-              << " m, height=" << visibleSize.y
-              << " m, visible=" << (GuiControlBridge::PlaneVisible() ? 1 : 0)
+              << " m, width=" << size.x
+              << " m, height=" << size.y
+              << " m, visible="
+              << (GuiControlBridge::PlaneVisible() ? 1 : 0)
               << '\n';
 }
 
@@ -154,8 +116,8 @@ inline void PrintPlaneState(const char* reason, const VarjoXR::XRPlane& plane)
 
 inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
 {
-    // Postprocess reveal is intentionally still keyboard-triggerable when the
-    // keyboard operation lock is enabled.
+    // Postprocess reveal remains keyboard-triggerable while ordinary keyboard
+    // Plane operations are locked.
     CalibrationRuntimeBridge::ApplyPlanePostProcessFromKeyboard(plane);
 
     const auto commands = GuiControlBridge::ConsumePlaneCommands();
@@ -165,9 +127,12 @@ inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
         const bool nextVisible = !GuiControlBridge::PlaneVisible();
         detail::ApplyVisibleState(plane, nextVisible);
         changed = true;
-        std::cout << "[PLANE][GUI] Plane "
-                  << (nextVisible ? "visible" : "hidden; VST postprocess pass-through")
-                  << '\n';
+        std::cout
+            << "[PLANE][GUI] Plane "
+            << (nextVisible
+                    ? "visible; VST blur+darken mask restored"
+                    : "hidden; VST postprocess pass-through")
+            << '\n';
     }
 
     changed |= detail::ApplyMoveResizeDepth(
@@ -182,19 +147,21 @@ inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
         static_cast<std::int64_t>(commands.moveFar));
 
     static thread_local bool oDown = false;
-    const bool oPressed = CalibrationRuntimeBridge::KeyPressedEdge('O', oDown);
+    const bool oPressed =
+        CalibrationRuntimeBridge::KeyPressedEdge('O', oDown);
     if (oPressed && !GuiControlBridge::KeyboardControlLocked()) {
         const bool nextVisible = !GuiControlBridge::PlaneVisible();
         detail::ApplyVisibleState(plane, nextVisible);
         changed = true;
-        std::cout << "[PLANE][KEY] Plane "
-                  << (nextVisible ? "visible" : "hidden; VST postprocess pass-through")
-                  << '\n';
+        std::cout
+            << "[PLANE][KEY] Plane "
+            << (nextVisible
+                    ? "visible; VST blur+darken mask restored"
+                    : "hidden; VST postprocess pass-through")
+            << '\n';
     }
 
-    // Keep the legacy arrow-key plane calibration behavior, but suppress its
-    // effect while keyboard operations are locked. Key edges are still consumed
-    // so releasing the lock does not replay old input.
+    // Consume key edges even while locked so unlocking never replays stale input.
     static thread_local CalibrationRuntimeBridge::ArrowEdgeState keys;
     const bool shift =
         (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
@@ -205,7 +172,8 @@ inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
     const bool up = keys.up();
     const bool down = keys.down();
 
-    if (CalibrationRuntimeBridge::gCalibrationActive.load(std::memory_order_acquire) &&
+    if (CalibrationRuntimeBridge::gCalibrationActive.load(
+            std::memory_order_acquire) &&
         !GuiControlBridge::KeyboardControlLocked()) {
         if (shift) {
             changed |= detail::ApplyMoveResizeDepth(
