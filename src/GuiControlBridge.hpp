@@ -19,7 +19,9 @@ struct PlaneCommandCounts {
 
 inline std::atomic_bool& KeyboardControlLockedStorage() noexcept
 {
-    static std::atomic_bool value{false};
+    // Default to locked so accidental keyboard input does not move the Plane.
+    // F23 reveal and Esc/GUI shutdown remain available through dedicated paths.
+    static std::atomic_bool value{true};
     return value;
 }
 
