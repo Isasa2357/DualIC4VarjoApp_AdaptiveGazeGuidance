@@ -32,9 +32,12 @@
     DualIC4Varjo::CalibrationRuntimeBridge::ApplyPlaneInputAfterRender(plane)
 
 // Keep the original Q/R/Esc termination semantics, but move the OpenCV window
-// offscreen and report quality through the console.
-#define RunCheckerboardStereoCalibration \
-    DualIC4Varjo::CalibrationRuntimeBridge::RunHeadlessCheckerboardStereoCalibration
+// offscreen and report quality through the console. During calibration,
+// Ctrl+C only sets gStopRequested; pass that flag to the bridge so the blocking
+// calibration loop is also aborted and the normal cleanup path can run.
+#define RunCheckerboardStereoCalibration(inputQueue, backend, options, initialDocument) \
+    DualIC4Varjo::CalibrationRuntimeBridge::RunHeadlessCheckerboardStereoCalibration( \
+        inputQueue, backend, options, initialDocument, &gStopRequested)
 
 #include "ApplicationMainRealtimeCalibration.cpp"
 
