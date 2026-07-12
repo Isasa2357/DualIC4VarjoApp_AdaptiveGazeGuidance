@@ -141,7 +141,10 @@ inline VarjoFadeOutPostProcess::PlaneMaskRects ProjectPlaneRects(
 
         if (!valid) continue;
 
-        constexpr float kMaskMargin01 = 0.01f;
+        // Keep the mask tight to the projected Plane corners. Earlier versions
+        // used a 0.01 normalized margin, which was visibly too large in Varjo
+        // focus/context postprocess output.
+        constexpr float kMaskMargin01 = 0.0f;
         rects[viewIndex].x0 = std::clamp(minX - kMaskMargin01, 0.0f, 1.0f);
         rects[viewIndex].y0 = std::clamp(minY - kMaskMargin01, 0.0f, 1.0f);
         rects[viewIndex].x1 = std::clamp(maxX + kMaskMargin01, 0.0f, 1.0f);
