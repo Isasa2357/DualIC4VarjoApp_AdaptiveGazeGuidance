@@ -45,11 +45,11 @@ struct StereoPostProcessSettings {
     bool enabled = false;
     float centerX01 = 0.5f;
     float centerY01 = 0.5f;
-    float radiusShortAxis01 = 0.25f;
+    float radiusShortAxis01 = 0.1f;
     float edgeSoftnessShortAxis01 = 0.03f;
     float outsideBrightness = 0.5f;
-    float blurRadiusPixels = 4.0f;
-    float blurSigmaPixels = 2.0f;
+    float blurRadiusPixels = 8.0f;
+    float blurSigmaPixels = 4.0f;
     float blurStrength01 = 1.0f;
 };
 
