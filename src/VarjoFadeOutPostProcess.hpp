@@ -129,7 +129,7 @@ public:
         fadeStarted_.store(false, std::memory_order_release);
         completed_.store(false, std::memory_order_release);
         std::cout
-            << "[VST_POSTPROCESS] shader configured; green mask will enable after calibration, "
+            << "[VST_POSTPROCESS] shader configured; outside-plane blur+darken will enable after calibration, "
             << "focus views map through sourceFocusRect, fade-out will take over on Esc\n";
         return true;
     }
@@ -145,6 +145,8 @@ public:
         constants_ = makePassThroughConstants();
         constants_.mode = 1.0f;
         constants_.fadeAmount = 0.0f;
+        constants_.blurRadiusPixels = 2.0f;
+        constants_.darkenMultiplier = 0.5f;
         for (std::size_t view = 0; view < rects.size(); ++view) {
             constants_.planeRects[view][0] = rects[view].x0;
             constants_.planeRects[view][1] = rects[view].y0;
@@ -156,14 +158,14 @@ public:
             lastError_ = shader_->lastError();
             return false;
         }
-        if (!ensureShaderEnabledLocked("green outside-plane mask")) {
+        if (!ensureShaderEnabledLocked("outside-plane blur+darken")) {
             return false;
         }
 
         if (!greenModeLogged_) {
             greenModeLogged_ = true;
             std::cout
-                << "[VST_POSTPROCESS] green outside-plane mask enabled "
+                << "[VST_POSTPROCESS] outside-plane blur+darken enabled "
                 << "(context views use their Plane rect; focus views map to context via sourceFocusRect)\n";
         }
         return true;
@@ -182,9 +184,13 @@ public:
 
         if (!enableVideoRenderLocked()) return false;
 
-        constants_ = makePassThroughConstants();
+        // Keep the current blur and darken settings from the normal post-calibration
+        // mode. Once Esc hides the Plane, the former Plane region should also be
+        // blurred/darkened, then the darken multiplier fades to black over 2 s.
         constants_.mode = 2.0f;
         constants_.fadeAmount = 0.0f;
+        if (constants_.blurRadiusPixels <= 0.0f) constants_.blurRadiusPixels = 2.0f;
+        if (constants_.darkenMultiplier <= 0.0f) constants_.darkenMultiplier = 0.5f;
         if (!shader_->submitConstantBuffer(constants_)) {
             lastError_ = shader_->lastError();
             return false;
@@ -199,7 +205,7 @@ public:
 
         fadeStarted_.store(true, std::memory_order_release);
         worker_ = std::thread([this] { workerMain(); });
-        std::cout << "[FADE] VST fade-out shader mode enabled\n";
+        std::cout << "[FADE] VST fade-out shader mode enabled; blur is kept and brightness fades to black\n";
         return true;
     }
 
@@ -245,10 +251,10 @@ public:
 
 private:
     struct alignas(16) ShaderConstants {
-        float mode = 0.0f;       // 0: passthrough, 1: green outside Plane, 2: fade-out
-        float fadeAmount = 0.0f; // Used only when mode == 2
-        float reserved0 = 0.0f;
-        float reserved1 = 0.0f;
+        float mode = 0.0f;            // 0: passthrough, 1: blur+darken outside Plane, 2: full-screen blur+darken fade-out
+        float fadeAmount = 0.0f;      // Used only when mode == 2. 0 -> darkenMultiplier, 1 -> black.
+        float blurRadiusPixels = 2.0f;
+        float darkenMultiplier = 0.5f;
         float planeRects[4][4]{}; // x0, y0, x1, y1 in context-view normalized coordinates
     };
     static_assert(sizeof(ShaderConstants) == 80, "shader constants must remain 16-byte aligned");
@@ -258,6 +264,8 @@ private:
         ShaderConstants constants{};
         constants.mode = 0.0f;
         constants.fadeAmount = 0.0f;
+        constants.blurRadiusPixels = 2.0f;
+        constants.darkenMultiplier = 0.5f;
         for (auto& rect : constants.planeRects) {
             rect[0] = 2.0f;
             rect[1] = 2.0f;
@@ -334,8 +342,8 @@ cbuffer DualIC4VarjoPostProcessConstants : register(b1)
 {
     float mode;
     float fadeAmount;
-    float reserved0;
-    float reserved1;
+    float blurRadiusPixels;
+    float darkenMultiplier;
     float4 planeRects[4];
 };
 
@@ -391,6 +399,44 @@ float2 ContextUvForCurrentView(int2 pixel, int2 localPixel)
     return saturate((float2((float)pixel.x, (float)pixel.y) + 0.5f) / contextSize);
 }
 
+int2 ClampCurrentViewPixel(int2 p)
+{
+    const int2 viewMin = destRect.xy;
+    const int2 viewMax = destRect.xy + max(destRect.zw, int2(1, 1)) - int2(1, 1);
+    return int2(
+        clamp(p.x, viewMin.x, viewMax.x),
+        clamp(p.y, viewMin.y, viewMax.y));
+}
+
+float4 LoadSourceClamped(int2 p)
+{
+    return inputTex.Load(int3(ClampCurrentViewPixel(p), 0));
+}
+
+float3 BoxBlurCurrentViewRgb(int2 pixel)
+{
+    const int radius = max(1, (int)(blurRadiusPixels + 0.5f));
+    float3 accum = float3(0.0f, 0.0f, 0.0f);
+    float sampleCount = 0.0f;
+
+    [loop]
+    for (int dy = -radius; dy <= radius; ++dy) {
+        [loop]
+        for (int dx = -radius; dx <= radius; ++dx) {
+            accum += LoadSourceClamped(pixel + int2(dx, dy)).rgb;
+            sampleCount += 1.0f;
+        }
+    }
+
+    return accum / max(sampleCount, 1.0f);
+}
+
+float3 BlurDarkenRgb(int2 pixel, float multiplier)
+{
+    const float3 blurredRgb = BoxBlurCurrentViewRgb(pixel);
+    return blurredRgb * saturate(multiplier);
+}
+
 [numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -405,9 +451,11 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     const float4 source = inputTex.Load(int3(pixel, 0));
 
     if (mode > 1.5f) {
-        const float fade = saturate(fadeAmount);
-        const float3 fadedRgb = lerp(source.rgb, float3(0.0f, 0.0f, 0.0f), fade);
-        outputTex[pixel] = float4(fadedRgb, source.a);
+        // After Esc the Plane is hidden. Apply the same blur everywhere,
+        // including the former Plane area, and fade brightness from the current
+        // darkenMultiplier down to full black over fadeSeconds.
+        const float brightness = saturate(darkenMultiplier) * (1.0f - saturate(fadeAmount));
+        outputTex[pixel] = float4(BlurDarkenRgb(pixel, brightness), source.a);
         return;
     }
 
@@ -417,7 +465,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
         if (IsInsideRect(contextUv, planeRects[rectIndex])) {
             outputTex[pixel] = source;
         } else {
-            outputTex[pixel] = float4(0.0f, 1.0f, 0.0f, source.a);
+            outputTex[pixel] = float4(BlurDarkenRgb(pixel, darkenMultiplier), source.a);
         }
         return;
     }
@@ -469,8 +517,10 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
                 if (stopWorkerRequested_.load(std::memory_order_acquire)) break;
 
                 const auto now = std::chrono::steady_clock::now();
-                const float elapsed = std::chrono::duration<float>(now - begin).count();
-                const float fade = std::clamp(elapsed / durationSeconds, 0.0f, 1.0f);
+                const float fade = std::clamp(
+                    std::chrono::duration<float>(now - begin).count() / durationSeconds,
+                    0.0f,
+                    1.0f);
 
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
@@ -493,7 +543,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
                 if (shader_) shader_->submitConstantBuffer(constants_);
             }
             completed_.store(true, std::memory_order_release);
-            std::cout << "[FADE] VST fade-out constants reached 1.0\n";
+            std::cout << "[FADE] VST fade-out reached black with blur preserved\n";
         } catch (const std::exception& exception) {
             std::lock_guard<std::mutex> lock(mutex_);
             lastError_ = exception.what();
