@@ -33,6 +33,7 @@ struct PlanePostProcessRuntimeConfig {
     float revealOpenSeconds = 0.5f;
     float revealHoldSeconds = 3.0f;
     float revealCloseSeconds = 0.5f;
+    int revealVirtualKey = VK_F23;
 };
 
 inline std::mutex& PostProcessConfigMutex() noexcept
@@ -102,6 +103,21 @@ inline bool KeyPressedEdge(int key, bool& previous) noexcept
     return edge;
 }
 
+inline int SanitizeRevealVirtualKey(int key) noexcept
+{
+    return key > 0 ? key : VK_F23;
+}
+
+inline const char* RevealVirtualKeyName(int key) noexcept
+{
+    switch (SanitizeRevealVirtualKey(key)) {
+    case VK_F23: return "F23";
+    case 'D': return "D";
+    case 'F': return "F";
+    default: return "custom key";
+    }
+}
+
 inline float PositiveOr(float value, float fallback) noexcept
 {
     return std::isfinite(value) && value > 0.0f ? value : fallback;
@@ -127,20 +143,27 @@ inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
 {
     using Clock = std::chrono::steady_clock;
 
-    static thread_local bool dDown = false;
+    static thread_local bool revealKeyDown = false;
     static thread_local bool pulseActive = false;
     static thread_local Clock::time_point pulseStart{};
 
     const auto config = GetPostProcessRuntimeConfig();
+    const int revealVirtualKey = SanitizeRevealVirtualKey(config.revealVirtualKey);
+    const char* revealKeyName = RevealVirtualKeyName(revealVirtualKey);
     const auto now = Clock::now();
-    if (KeyPressedEdge('D', dDown)) {
+    const bool revealPressed = KeyPressedEdge(revealVirtualKey, revealKeyDown);
+    if (revealPressed && !pulseActive) {
         pulseActive = true;
         pulseStart = now;
         std::cout
-            << "[POSTPROCESS] reveal pulse started: "
+            << "[POSTPROCESS] reveal pulse started by " << revealKeyName << ": "
             << "open=" << config.revealOpenSeconds
             << "s, hold=" << config.revealHoldSeconds
             << "s, close=" << config.revealCloseSeconds << "s\n";
+    } else if (revealPressed && pulseActive) {
+        std::cout
+            << "[POSTPROCESS] reveal pulse is active; "
+            << revealKeyName << " input ignored until it closes\n";
     }
 
     float revealAmount = 0.0f;
@@ -310,12 +333,14 @@ inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
     const std::optional<StereoCalibrationDocument>& initialDocument,
     const std::atomic<bool>* externalStopRequested = nullptr)
 {
+    const auto config = GetPostProcessRuntimeConfig();
     std::cout
         << "[CALIB] OpenCV preview disabled\n"
         << "[CALIB] controls: Q=finish, R=clear observations, Esc=abort\n"
         << "[CALIB] move plane: arrows; resize/distance: Shift+arrows\n"
         << "[CALIB] hide/show Varjo plane: O\n"
-        << "[CALIB] reveal darkened surroundings: D\n";
+        << "[CALIB] reveal darkened surroundings: "
+        << RevealVirtualKeyName(config.revealVirtualKey) << "\n";
 
     gCalibrationActive.store(true, std::memory_order_release);
     std::atomic_bool helperThreadStop{false};
