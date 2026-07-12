@@ -9,6 +9,7 @@
 #include "RawStereoNvencRecordingIntegration.hpp"
 #include "CalibrationRuntimeBridge.hpp"
 #include "GuiPerformanceStats.hpp"
+#include "GuiPlaneControlIntegration.hpp"
 #include "PostProcessDefaultOverrides.hpp"
 #include "FadeOutPostProcessIntegration.hpp"
 
@@ -32,7 +33,7 @@
 #define GetAsyncKeyState DualIC4Varjo::FadeOutPostProcessIntegration::GetAsyncKeyState
 
 // Register the Plane immediately after XRSpace::createPlane() returns. The
-// render-token replacement applies keyboard input on the Varjo render thread,
+// render-token replacement applies GUI/keyboard input on the Varjo render thread,
 // updates the VST postprocess mask from the same frame's Plane projection,
 // publishes camera frame counters for the ImGui performance panel, and forces
 // the Plane transparent during shutdown fade-out without mutating XRPlane from
@@ -45,7 +46,7 @@
     DualIC4Varjo::PostProcessDefaultOverrides::ApplyOnce(); \
     DualIC4Varjo::GuiPerformanceStats::SubmitCameraReadFrames( \
         leftCamera.stats().readFrames, rightCamera.stats().readFrames); \
-    DualIC4Varjo::CalibrationRuntimeBridge::ApplyPlaneInputAfterRender(plane); \
+    DualIC4Varjo::GuiPlaneControlIntegration::ApplyPlaneInputAfterRender(plane); \
     DualIC4Varjo::FadeOutPostProcessIntegration::UpdatePlaneMaskFromFrame( \
         plane, d3dBackend.frameInfoSnapshot()); \
     DualIC4Varjo::FadeOutPostProcessIntegration::ApplyPlaneFadeVisibility(plane)
