@@ -131,7 +131,8 @@ public:
         std::cout
             << "[VST_POSTPROCESS] shader configured; outside-plane blur+darken "
             << "will use blur radius " << kDefaultBlurRadiusPixels
-            << " px, focus views map through sourceFocusRect, fade-out will take over on Esc\n";
+            << " px, a Plane-centered black circle is cut by the Plane rect, "
+            << "focus views map through sourceFocusRect, fade-out will take over on Esc\n";
         return true;
     }
 
@@ -168,7 +169,8 @@ public:
             std::cout
                 << "[VST_POSTPROCESS] outside-plane blur+darken enabled "
                 << "(blur radius=" << constants_.blurRadiusPixels
-                << " px; context views use their Plane rect; focus views map to context via sourceFocusRect)\n";
+                << " px; black circle diameter=Plane diagonal, Plane rect is cut out; "
+                << "context views use their Plane rect; focus views map to context via sourceFocusRect)\n";
         }
         return true;
     }
@@ -410,6 +412,27 @@ float2 ContextUvForCurrentView(int2 pixel, int2 localPixel)
     return saturate((float2((float)pixel.x, (float)pixel.y) + 0.5f) / contextSize);
 }
 
+bool IsInsidePlaneDiagonalCircle(float2 contextUv, float4 rect)
+{
+    if (rect.z <= rect.x || rect.w <= rect.y) {
+        return false;
+    }
+
+    const float2 contextSize = max(
+        float2((float)sourceContextSize.x, (float)sourceContextSize.y),
+        float2(1.0f, 1.0f));
+    const float2 rectCenter = 0.5f * (rect.xy + rect.zw);
+    const float2 rectSizePixels = abs(rect.zw - rect.xy) * contextSize;
+
+    // The requested circle is centered on the Plane center. Its diameter is the
+    // Plane diagonal, so the radius is half of the Plane-rect diagonal in context
+    // pixels. The Plane rectangle is tested separately and returned unchanged,
+    // which makes the visible VST shape a filled circle with a rectangular cutout.
+    const float radiusPixels = 0.5f * length(rectSizePixels);
+    const float2 deltaPixels = (contextUv - rectCenter) * contextSize;
+    return dot(deltaPixels, deltaPixels) <= radiusPixels * radiusPixels;
+}
+
 int2 ClampCurrentViewPixel(int2 p)
 {
     const int2 viewMin = destRect.xy;
@@ -473,8 +496,11 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (mode > 0.5f) {
         const float2 contextUv = ContextUvForCurrentView(pixel, localPixel);
         const int rectIndex = ContextRectIndexForCurrentView();
-        if (IsInsideRect(contextUv, planeRects[rectIndex])) {
+        const float4 planeRect = planeRects[rectIndex];
+        if (IsInsideRect(contextUv, planeRect)) {
             outputTex[pixel] = source;
+        } else if (IsInsidePlaneDiagonalCircle(contextUv, planeRect)) {
+            outputTex[pixel] = float4(0.0f, 0.0f, 0.0f, source.a);
         } else {
             outputTex[pixel] = float4(BlurDarkenRgb(pixel, darkenMultiplier), source.a);
         }
