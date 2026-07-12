@@ -39,6 +39,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         session_ = std::move(session);
         commandQueue_ = commandQueue;
+        std::cout << "[FADE] runtime registered for VST fade-out postprocess\n";
     }
 
     bool initializeAfterCalibration()
@@ -47,13 +48,16 @@ public:
         if (postProcess_) return true;
         if (!session_) {
             lastError_ = "fade-out postprocess runtime session was not registered";
+            std::cerr << "[FADE] initialization skipped: " << lastError_ << '\n';
             return false;
         }
         if (!commandQueue_) {
             lastError_ = "fade-out postprocess runtime D3D12 queue was not registered";
+            std::cerr << "[FADE] initialization skipped: " << lastError_ << '\n';
             return false;
         }
 
+        std::cout << "[FADE] initializing VST fade-out postprocess\n";
         VarjoFadeOutPostProcess::Config config{};
         config.fadeSeconds = 2.0f;
         auto postProcess = std::make_unique<VarjoFadeOutPostProcess>(
@@ -62,6 +66,7 @@ public:
             config);
         if (!postProcess->initialize()) {
             lastError_ = postProcess->lastError();
+            std::cerr << "[FADE] initialization failed: " << lastError_ << '\n';
             return false;
         }
 
@@ -73,6 +78,21 @@ public:
 
     bool startEscFadeOut()
     {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (shutdownReady_.load(std::memory_order_acquire)) return true;
+            if (fadeStarted_.load(std::memory_order_acquire)) return true;
+        }
+
+        // Initialization can fail immediately after logging starts on some Varjo
+        // Runtime configurations. Keep the application running and retry when
+        // Esc is actually pressed, after the post-calibration VST/render loop has
+        // had time to start.
+        if (!initializeAfterCalibration()) {
+            shutdownReady_.store(true, std::memory_order_release);
+            return false;
+        }
+
         std::lock_guard<std::mutex> lock(mutex_);
         if (shutdownReady_.load(std::memory_order_acquire)) return true;
         if (fadeStarted_.load(std::memory_order_acquire)) return true;
@@ -107,18 +127,18 @@ public:
 
     SHORT handleEscapeGetAsyncKeyState()
     {
-        if (!postProcess_) {
-            return ::GetAsyncKeyState(VK_ESCAPE);
-        }
+        const SHORT physicalState = ::GetAsyncKeyState(VK_ESCAPE);
+        const bool physicalEscDown = (physicalState & 0x8000) != 0;
 
         if (shutdownReady_.load(std::memory_order_acquire)) {
             return static_cast<SHORT>(0x8000);
         }
 
-        const bool physicalEscDown = (::GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
         if (physicalEscDown && !fadeStarted_.load(std::memory_order_acquire)) {
             if (!startEscFadeOut()) {
-                std::cerr << "[FADE] failed to start fade-out: " << lastError() << '\n';
+                std::cerr << "[FADE] failed to start fade-out: " << lastError()
+                          << " ; falling back to immediate shutdown\n";
+                return physicalState;
             }
             return 0;
         }
@@ -137,13 +157,11 @@ public:
             return 0;
         }
 
-        return ::GetAsyncKeyState(VK_ESCAPE);
+        return physicalState;
     }
 
     void waitForFadeCompletion()
     {
-        std::unique_ptr<VarjoFadeOutPostProcess>* unused = nullptr;
-        (void)unused;
         std::lock_guard<std::mutex> lock(waitMutex_);
         if (!fadeStarted_.load(std::memory_order_acquire)) return;
         VarjoFadeOutPostProcess* postProcess = nullptr;
@@ -218,9 +236,11 @@ public:
     {
         if (!inner_.start(path)) return false;
         if (!InitializeAfterCalibration()) {
-            integrationError_ = Manager::instance().lastError();
-            inner_.stop();
-            return false;
+            startupWarning_ = Manager::instance().lastError();
+            std::cerr
+                << "[FADE] warning: fade-out postprocess is not ready yet: "
+                << startupWarning_
+                << " ; recording/rendering will continue and Esc will retry initialization\n";
         }
         return true;
     }
@@ -239,13 +259,12 @@ public:
 
     std::string lastError() const
     {
-        if (!integrationError_.empty()) return integrationError_;
         return inner_.lastError();
     }
 
 private:
     RecordingRenderedFrameMetadataLogger inner_;
-    std::string integrationError_;
+    std::string startupWarning_;
 };
 
 } // namespace DualIC4Varjo::FadeOutPostProcessIntegration
