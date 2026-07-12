@@ -96,7 +96,9 @@ public:
         config.timestampSource = commandLineTimestampSource();
         config.constantQp = 18;
         config.maximumPendingGpuPairs = 32;
-        config.remuxToMp4 = true;
+        // Keep the application shutdown path short and Varjo rendering responsive.
+        // MP4 remux is intentionally left to an offline, user-side process.
+        config.remuxToMp4 = false;
 
         recorder_ = std::make_unique<RawStereoNvencRecorder>(std::move(config));
         if (!recorder_->start()) {
