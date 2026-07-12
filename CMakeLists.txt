@@ -45,7 +45,7 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
-    VERSION 0.21.3
+    VERSION 0.21.4
     LANGUAGES CXX)
 
 if(NOT WIN32)
@@ -151,7 +151,7 @@ endif()
 set(VARJOTOOLKIT_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 set(VARJOTOOLKIT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(VARJOTOOLKIT_BUILD_HMD_TESTS OFF CACHE BOOL "" FORCE)
-set(VARJOTOOLKIT_ENABLE_EXPERIMENTAL_MR_POSTPROCESS OFF CACHE BOOL "" FORCE)
+set(VARJOTOOLKIT_ENABLE_EXPERIMENTAL_MR_POSTPROCESS ON CACHE BOOL "" FORCE)
 if(NOT TARGET VarjoToolkit::VarjoToolkit)
     FetchContent_Declare(
         VarjoToolkit
@@ -287,6 +287,7 @@ add_executable(DualIC4VarjoApp
     src/ExperimentOutput.hpp
     src/EyeTrackerLoadServiceHook.cpp
     src/EyeTrackerLoadServiceHook.hpp
+    src/FadeOutPostProcessIntegration.hpp
     src/GazeOnCameraFrameService.cpp
     src/GazeOnCameraFrameService.hpp
     src/ImGuiStereoPreviewGazeOverlay.cpp
@@ -295,6 +296,7 @@ add_executable(DualIC4VarjoApp
     src/ImuLoadServiceHook.hpp
     src/KeyInputService.cpp
     src/KeyInputService.hpp
+    src/PostProcessDefaultOverrides.hpp
     src/RawStereoNvencRecorder.cpp
     src/RawStereoNvencRecorder.hpp
     src/RawStereoNvencRecordingIntegration.hpp
@@ -309,6 +311,7 @@ add_executable(DualIC4VarjoApp
     src/TimeUtil.hpp
     src/TimestampLoadService.cpp
     src/TimestampLoadService.hpp
+    src/VarjoFadeOutPostProcess.hpp
     src/VstLoadServiceHook.cpp
     src/VstLoadServiceHook.hpp)
 
@@ -321,6 +324,7 @@ target_link_libraries(DualIC4VarjoApp PRIVATE
     DualIC4Varjo::ImGui
     D3D12Nvenc::VideoWriter
     nlohmann_json::nlohmann_json
+    d3dcompiler
     shell32
     ${OpenCV_LIBS})
 
