@@ -8,6 +8,7 @@
 #endif
 
 #include "CheckerboardStereoCalibration.hpp"
+#include "StereoCalibrationSupport.hpp"
 
 #include <VarjoXR/VarjoXR.hpp>
 
@@ -18,12 +19,52 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <thread>
 
 namespace DualIC4Varjo::CalibrationRuntimeBridge {
 
 inline std::atomic_bool gCalibrationActive{false};
 inline VarjoXR::XRPlane* gPlane = nullptr;
+
+struct PlanePostProcessRuntimeConfig {
+    StereoPostProcessSettings settings{};
+    float revealOpenSeconds = 0.5f;
+    float revealHoldSeconds = 3.0f;
+    float revealCloseSeconds = 0.5f;
+};
+
+inline std::mutex& PostProcessConfigMutex() noexcept
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+inline PlanePostProcessRuntimeConfig& PostProcessConfigStorage() noexcept
+{
+    static PlanePostProcessRuntimeConfig config;
+    return config;
+}
+
+inline PlanePostProcessRuntimeConfig GetPostProcessRuntimeConfig()
+{
+    std::lock_guard<std::mutex> lock(PostProcessConfigMutex());
+    return PostProcessConfigStorage();
+}
+
+inline void SetPostProcessRuntimeConfig(
+    const PlanePostProcessRuntimeConfig& config)
+{
+    std::lock_guard<std::mutex> lock(PostProcessConfigMutex());
+    PostProcessConfigStorage() = config;
+}
+
+inline void SetPostProcessSettings(
+    const StereoPostProcessSettings& settings)
+{
+    std::lock_guard<std::mutex> lock(PostProcessConfigMutex());
+    PostProcessConfigStorage().settings = settings;
+}
 
 inline void RegisterPlane(VarjoXR::XRPlane& plane) noexcept
 {
@@ -60,6 +101,11 @@ inline bool KeyPressedEdge(int key, bool& previous) noexcept
     return edge;
 }
 
+inline float PositiveOr(float value, float fallback) noexcept
+{
+    return std::isfinite(value) && value > 0.0f ? value : fallback;
+}
+
 inline void ApplyPlaneVisibilityFromKeyboard(VarjoXR::XRPlane& plane)
 {
     static thread_local bool oDown = false;
@@ -76,9 +122,54 @@ inline void ApplyPlaneVisibilityFromKeyboard(VarjoXR::XRPlane& plane)
         << " (rendering continues, O toggles)\n";
 }
 
+inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
+{
+    using Clock = std::chrono::steady_clock;
+
+    static thread_local bool dDown = false;
+    static thread_local bool pulseActive = false;
+    static thread_local Clock::time_point pulseStart{};
+
+    const auto config = GetPostProcessRuntimeConfig();
+    const auto now = Clock::now();
+    if (KeyPressedEdge('D', dDown)) {
+        pulseActive = true;
+        pulseStart = now;
+        std::cout
+            << "[POSTPROCESS] reveal pulse started: "
+            << "open=" << config.revealOpenSeconds
+            << "s, hold=" << config.revealHoldSeconds
+            << "s, close=" << config.revealCloseSeconds << "s\n";
+    }
+
+    float revealAmount = 0.0f;
+    if (pulseActive) {
+        const float openSeconds = PositiveOr(config.revealOpenSeconds, 0.5f);
+        const float holdSeconds = std::max(0.0f, config.revealHoldSeconds);
+        const float closeSeconds = PositiveOr(config.revealCloseSeconds, 0.5f);
+        const float elapsedSeconds = std::chrono::duration<float>(
+            now - pulseStart).count();
+        if (elapsedSeconds < openSeconds) {
+            revealAmount = elapsedSeconds / openSeconds;
+        } else if (elapsedSeconds < openSeconds + holdSeconds) {
+            revealAmount = 1.0f;
+        } else if (elapsedSeconds < openSeconds + holdSeconds + closeSeconds) {
+            const float closingElapsed = elapsedSeconds - openSeconds - holdSeconds;
+            revealAmount = 1.0f - closingElapsed / closeSeconds;
+        } else {
+            pulseActive = false;
+            revealAmount = 0.0f;
+        }
+        revealAmount = std::clamp(revealAmount, 0.0f, 1.0f);
+    }
+
+    UpdatePlanePostProcessState(plane, config.settings, revealAmount);
+}
+
 inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
 {
     ApplyPlaneVisibilityFromKeyboard(plane);
+    ApplyPlanePostProcessFromKeyboard(plane);
 
     if (!gCalibrationActive.load(std::memory_order_acquire)) return;
 
@@ -222,7 +313,8 @@ inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
         << "[CALIB] OpenCV preview disabled\n"
         << "[CALIB] controls: Q=finish, R=clear observations, Esc=abort\n"
         << "[CALIB] move plane: arrows; resize/distance: Shift+arrows\n"
-        << "[CALIB] hide/show Varjo plane: O\n";
+        << "[CALIB] hide/show Varjo plane: O\n"
+        << "[CALIB] reveal darkened surroundings: D\n";
 
     gCalibrationActive.store(true, std::memory_order_release);
     std::atomic_bool helperThreadStop{false};
