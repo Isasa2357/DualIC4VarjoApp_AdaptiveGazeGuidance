@@ -63,10 +63,14 @@ std::vector<std::string> SplitComma(const std::string& line)
 
 float ParseFloat(const std::string& text)
 {
-    if (text.empty() || text == "nan" || text == "nullopt") return std::numeric_limits<float>::quiet_NaN();
+    if (text.empty() || text == "nan" || text == "nullopt") {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
     char* end = nullptr;
     const float value = std::strtof(text.c_str(), &end);
-    return (!end || end == text.c_str()) ? std::numeric_limits<float>::quiet_NaN() : value;
+    return (!end || end == text.c_str())
+        ? std::numeric_limits<float>::quiet_NaN()
+        : value;
 }
 
 std::int64_t ParseI64(const std::string& text)
@@ -74,7 +78,9 @@ std::int64_t ParseI64(const std::string& text)
     if (text.empty() || text == "nan" || text == "nullopt") return 0;
     char* end = nullptr;
     const long long value = std::strtoll(text.c_str(), &end, 10);
-    return (!end || end == text.c_str()) ? 0 : static_cast<std::int64_t>(value);
+    return (!end || end == text.c_str())
+        ? 0
+        : static_cast<std::int64_t>(value);
 }
 
 bool ParseBool01(const std::string& text)
@@ -87,7 +93,7 @@ public:
     void refresh()
     {
         const auto now = Clock::now();
-        if (now - lastRefresh_ < std::chrono::milliseconds(15)) return;
+        if (now - lastRefresh_ < std::chrono::milliseconds(20)) return;
         lastRefresh_ = now;
 
         const auto path = GazeOnCameraFrameHook::outputPath();
@@ -99,12 +105,7 @@ public:
         input.seekg(0, std::ios::end);
         const std::streamoff end = static_cast<std::streamoff>(input.tellg());
         if (end < 0) return;
-        if (offset_ > end) {
-            offset_ = 0;
-            pending_.clear();
-            header_.clear();
-            headerParsed_ = false;
-        }
+        if (offset_ > end) reset(path_);
         if (end == offset_) return;
 
         input.seekg(offset_, std::ios::beg);
@@ -147,24 +148,31 @@ private:
     {
         const auto columns = SplitComma(line);
         header_.clear();
-        for (std::size_t index = 0; index < columns.size(); ++index) header_[columns[index]] = index;
+        for (std::size_t index = 0; index < columns.size(); ++index) {
+            header_[columns[index]] = index;
+        }
         headerParsed_ = true;
     }
 
     std::optional<std::size_t> column(const char* name) const
     {
         const auto it = header_.find(name);
-        return it == header_.end() ? std::nullopt : std::optional<std::size_t>(it->second);
+        if (it == header_.end()) return std::nullopt;
+        return it->second;
     }
 
-    std::string value(const std::vector<std::string>& columns, const char* name) const
+    std::string value(
+        const std::vector<std::string>& columns,
+        const char* name) const
     {
         const auto index = column(name);
         if (!index || *index >= columns.size()) return {};
         return columns[*index];
     }
 
-    SideSample parseSide(const std::vector<std::string>& columns, const char* prefix) const
+    SideSample parseSide(
+        const std::vector<std::string>& columns,
+        const char* prefix) const
     {
         SideSample side;
         const std::string xName = std::string(prefix) + "_camera_x01";
@@ -173,8 +181,10 @@ private:
         side.x01 = ParseFloat(value(columns, xName.c_str()));
         side.y01 = ParseFloat(value(columns, yName.c_str()));
         side.inside = ParseBool01(value(columns, insideName.c_str()));
-        side.valid = side.inside && std::isfinite(side.x01) && std::isfinite(side.y01) &&
-            side.x01 >= 0.0f && side.x01 <= 1.0f && side.y01 >= 0.0f && side.y01 <= 1.0f;
+        side.valid = side.inside &&
+            std::isfinite(side.x01) && std::isfinite(side.y01) &&
+            side.x01 >= 0.0f && side.x01 <= 1.0f &&
+            side.y01 >= 0.0f && side.y01 <= 1.0f;
         return side;
     }
 
@@ -226,11 +236,13 @@ public:
             count_ = 0;
         }
         if (end == offset_) return;
+
         input.seekg(offset_, std::ios::beg);
         std::string chunk(static_cast<std::size_t>(end - offset_), '\0');
         input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
         offset_ = end;
         pending_ += chunk;
+
         for (;;) {
             const std::size_t newline = pending_.find('\n');
             if (newline == std::string::npos) break;
@@ -238,7 +250,10 @@ public:
             pending_.erase(0, newline + 1);
             if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.empty()) continue;
-            if (!headerSkipped_) { headerSkipped_ = true; continue; }
+            if (!headerSkipped_) {
+                headerSkipped_ = true;
+                continue;
+            }
             ++count_;
         }
     }
@@ -253,20 +268,29 @@ private:
     std::uint64_t count_ = 0;
 };
 
-std::filesystem::path FindFileBySuffix(const std::filesystem::path& directory, const std::string& suffix)
+std::filesystem::path FindFileBySuffix(
+    const std::filesystem::path& directory,
+    const std::string& suffix)
 {
     if (directory.empty()) return {};
     std::error_code error;
     if (!std::filesystem::is_directory(directory, error)) return {};
+
     std::filesystem::path best;
     std::filesystem::file_time_type bestTime{};
     for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
         if (error) break;
         if (!entry.is_regular_file(error)) continue;
         const auto name = entry.path().filename().string();
-        if (name.size() < suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
+        if (name.size() < suffix.size() ||
+            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+            continue;
+        }
         const auto time = entry.last_write_time(error);
-        if (best.empty() || (!error && time > bestTime)) { best = entry.path(); bestTime = time; }
+        if (best.empty() || (!error && time > bestTime)) {
+            best = entry.path();
+            bestTime = time;
+        }
     }
     return best;
 }
@@ -275,14 +299,16 @@ class RateHistory {
 public:
     void push(float value)
     {
-        values_.push_back(value);
+        values_.push_back(std::isfinite(value) ? std::max(0.0f, value) : 0.0f);
         if (values_.size() > capacity_) values_.pop_front();
     }
+
     const std::deque<float>& values() const noexcept { return values_; }
     float latest() const noexcept { return values_.empty() ? 0.0f : values_.back(); }
+
 private:
     std::deque<float> values_;
-    std::size_t capacity_ = 90;
+    std::size_t capacity_ = 120;
 };
 
 struct CounterSnapshot {
@@ -303,9 +329,11 @@ public:
         const auto now = Clock::now();
         if (now - lastFileScan_ > std::chrono::seconds(1)) {
             lastFileScan_ = now;
-            const auto dir = VstLoadServiceHook::outputDirectory();
-            codecLeftCounter_.setPath(FindFileBySuffix(dir, "_left_raw_metadata.csv"));
-            codecRightCounter_.setPath(FindFileBySuffix(dir, "_right_raw_metadata.csv"));
+            const auto directory = VstLoadServiceHook::outputDirectory();
+            codecLeftCounter_.setPath(
+                FindFileBySuffix(directory, "_left_raw_metadata.csv"));
+            codecRightCounter_.setPath(
+                FindFileBySuffix(directory, "_right_raw_metadata.csv"));
         }
         codecLeftCounter_.refresh();
         codecRightCounter_.refresh();
@@ -321,30 +349,50 @@ public:
         current.eye = EyeTrackerLoadServiceHook::receivedSampleCount();
         current.imu = ImuLoadServiceHook::receivedCount();
 
-        if (!hasPrevious_) { previous_ = current; previousTime_ = now; hasPrevious_ = true; return; }
-        const double dt = std::chrono::duration<double>(now - previousTime_).count();
-        if (dt < 0.5) return;
+        if (!hasPrevious_) {
+            previous_ = current;
+            previousTime_ = now;
+            hasPrevious_ = true;
+            return;
+        }
 
-        cameraLeft.push(rate(previous_.cameraLeft, current.cameraLeft, dt));
-        cameraRight.push(rate(previous_.cameraRight, current.cameraRight, dt));
-        codecLeft.push(rate(previous_.codecLeft, current.codecLeft, dt));
-        codecRight.push(rate(previous_.codecRight, current.codecRight, dt));
-        vstLeft.push(rate(previous_.vstLeft, current.vstLeft, dt));
-        vstRight.push(rate(previous_.vstRight, current.vstRight, dt));
-        eye.push(rate(previous_.eye, current.eye, dt));
-        imu.push(rate(previous_.imu, current.imu, dt));
+        const double elapsed =
+            std::chrono::duration<double>(now - previousTime_).count();
+        if (elapsed < 0.5) return;
+
+        cameraLeft.push(rate(previous_.cameraLeft, current.cameraLeft, elapsed));
+        cameraRight.push(rate(previous_.cameraRight, current.cameraRight, elapsed));
+        codecLeft.push(rate(previous_.codecLeft, current.codecLeft, elapsed));
+        codecRight.push(rate(previous_.codecRight, current.codecRight, elapsed));
+        vstLeft.push(rate(previous_.vstLeft, current.vstLeft, elapsed));
+        vstRight.push(rate(previous_.vstRight, current.vstRight, elapsed));
+        eye.push(rate(previous_.eye, current.eye, elapsed));
+        imu.push(rate(previous_.imu, current.imu, elapsed));
+
         previous_ = current;
         previousTime_ = now;
     }
 
-    RateHistory cameraLeft, cameraRight, codecLeft, codecRight, vstLeft, vstRight, eye, imu;
+    RateHistory cameraLeft;
+    RateHistory cameraRight;
+    RateHistory codecLeft;
+    RateHistory codecRight;
+    RateHistory vstLeft;
+    RateHistory vstRight;
+    RateHistory eye;
+    RateHistory imu;
 
 private:
-    static float rate(std::uint64_t previous, std::uint64_t current, double dt) noexcept
+    static float rate(
+        std::uint64_t previous,
+        std::uint64_t current,
+        double elapsed) noexcept
     {
-        if (current < previous || dt <= 0.0) return 0.0f;
-        return static_cast<float>(static_cast<double>(current - previous) / dt);
+        if (current < previous || elapsed <= 0.0) return 0.0f;
+        return static_cast<float>(
+            static_cast<double>(current - previous) / elapsed);
     }
+
     LineTailCounter codecLeftCounter_;
     LineTailCounter codecRightCounter_;
     bool hasPrevious_ = false;
@@ -353,133 +401,368 @@ private:
     Clock::time_point lastFileScan_{};
 };
 
-CsvTailReader& Reader() { static CsvTailReader reader; return reader; }
-PerformancePanelState& Performance() { static PerformancePanelState value; return value; }
-int& ImageSideIndex() { static thread_local int value = 0; return value; }
+struct PanelLayout {
+    float margin = 12.0f;
+    float gap = 12.0f;
+    float leftWidth = 1.0f;
+    float rightWidth = 1.0f;
+    float videoHeight = 1.0f;
+    float controlsHeight = 1.0f;
+};
 
-void DrawGazePoint(const SideSample& side, const ImVec2& imageMin, const ImVec2& imageSize)
+PanelLayout CalculateLayout()
+{
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 workSize = viewport ? viewport->WorkSize : ImVec2(1600.0f, 800.0f);
+
+    PanelLayout layout;
+    const float usableWidth = std::max(
+        640.0f,
+        workSize.x - layout.margin * 2.0f);
+    float rightWidth = std::clamp(usableWidth * 0.36f, 400.0f, 620.0f);
+    if (usableWidth - layout.gap - rightWidth < 520.0f) {
+        rightWidth = std::max(320.0f, usableWidth - layout.gap - 520.0f);
+    }
+    layout.rightWidth = rightWidth;
+    layout.leftWidth = std::max(320.0f, usableWidth - layout.gap - rightWidth);
+
+    float controlsHeight = std::clamp(workSize.y * 0.34f, 250.0f, 315.0f);
+    float videoHeight = workSize.y - layout.margin * 2.0f - layout.gap - controlsHeight;
+    if (videoHeight < 280.0f) {
+        videoHeight = 280.0f;
+        controlsHeight = std::max(
+            180.0f,
+            workSize.y - layout.margin * 2.0f - layout.gap - videoHeight);
+    }
+    layout.videoHeight = videoHeight;
+    layout.controlsHeight = controlsHeight;
+    return layout;
+}
+
+CsvTailReader& Reader()
+{
+    static CsvTailReader value;
+    return value;
+}
+
+PerformancePanelState& Performance()
+{
+    static PerformancePanelState value;
+    return value;
+}
+
+int& ImageSideIndex()
+{
+    static thread_local int value = 0;
+    return value;
+}
+
+void ApplySpaciousStyleOnce()
+{
+    static bool applied = false;
+    if (applied || !ImGui::GetCurrentContext()) return;
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowPadding = ImVec2(14.0f, 12.0f);
+    style.FramePadding = ImVec2(10.0f, 7.0f);
+    style.ItemSpacing = ImVec2(12.0f, 10.0f);
+    style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
+    style.IndentSpacing = 20.0f;
+    style.ScrollbarSize = 16.0f;
+    style.GrabMinSize = 12.0f;
+    style.WindowRounding = 5.0f;
+    style.ChildRounding = 4.0f;
+    style.FrameRounding = 4.0f;
+    style.PopupRounding = 4.0f;
+    applied = true;
+}
+
+void DrawGazePoint(
+    const SideSample& side,
+    const ImVec2& imageMin,
+    const ImVec2& imageSize)
 {
     if (!side.valid) return;
-    const ImVec2 center(imageMin.x + side.x01 * imageSize.x, imageMin.y + side.y01 * imageSize.y);
+    const ImVec2 center(
+        imageMin.x + side.x01 * imageSize.x,
+        imageMin.y + side.y01 * imageSize.y);
     ImDrawList* draw = ImGui::GetWindowDrawList();
     constexpr float radius = 8.0f;
     draw->AddCircleFilled(center, radius + 3.0f, IM_COL32(0, 0, 0, 220), 32);
     draw->AddCircle(center, radius + 3.0f, IM_COL32(255, 255, 255, 255), 32, 2.0f);
     draw->AddCircleFilled(center, radius, IM_COL32(0, 255, 255, 230), 32);
-    draw->AddLine(ImVec2(center.x - 14.0f, center.y), ImVec2(center.x + 14.0f, center.y), IM_COL32(0, 0, 0, 240), 3.0f);
-    draw->AddLine(ImVec2(center.x, center.y - 14.0f), ImVec2(center.x, center.y + 14.0f), IM_COL32(0, 0, 0, 240), 3.0f);
-    draw->AddLine(ImVec2(center.x - 14.0f, center.y), ImVec2(center.x + 14.0f, center.y), IM_COL32(255, 255, 255, 255), 1.0f);
-    draw->AddLine(ImVec2(center.x, center.y - 14.0f), ImVec2(center.x, center.y + 14.0f), IM_COL32(255, 255, 255, 255), 1.0f);
+    draw->AddLine(
+        ImVec2(center.x - 14.0f, center.y),
+        ImVec2(center.x + 14.0f, center.y),
+        IM_COL32(255, 255, 255, 255),
+        2.0f);
+    draw->AddLine(
+        ImVec2(center.x, center.y - 14.0f),
+        ImVec2(center.x, center.y + 14.0f),
+        IM_COL32(255, 255, 255, 255),
+        2.0f);
 }
 
 void RequestApplicationExitFromGui()
 {
     GuiControlBridge::RequestApplicationExit();
-    INPUT inputs[2]{};
-    inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = VK_ESCAPE;
-    inputs[1].type = INPUT_KEYBOARD;
-    inputs[1].ki.wVk = VK_ESCAPE;
-    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(2, inputs, sizeof(INPUT));
 }
 
-float MaxHistoryValue(const std::deque<float>& a, const std::deque<float>& b)
+float MaxHistoryValue(
+    const std::deque<float>& first,
+    const std::deque<float>* second)
 {
     float value = 1.0f;
-    for (float item : a) value = std::max(value, item);
-    for (float item : b) value = std::max(value, item);
+    for (float item : first) value = std::max(value, item);
+    if (second) {
+        for (float item : *second) value = std::max(value, item);
+    }
     return value;
 }
 
-void DrawOneLine(ImDrawList* draw, const ImVec2& min, const ImVec2& size, const std::deque<float>& values, float maxValue, ImU32 color)
+void DrawOneLine(
+    ImDrawList* draw,
+    const ImVec2& minimum,
+    const ImVec2& size,
+    const std::deque<float>& values,
+    float maximum,
+    ImU32 color)
 {
-    if (!draw || values.size() < 2 || maxValue <= 0.0f) return;
+    if (!draw || values.size() < 2 || maximum <= 0.0f) return;
     const std::size_t count = values.size();
     ImVec2 previous{};
     for (std::size_t index = 0; index < count; ++index) {
-        const float x = min.x + size.x * (static_cast<float>(index) / static_cast<float>(count - 1));
-        const float normalized = std::clamp(values[index] / maxValue, 0.0f, 1.0f);
-        const float y = min.y + size.y * (1.0f - normalized);
+        const float x = minimum.x + size.x *
+            (static_cast<float>(index) / static_cast<float>(count - 1));
+        const float normalized = std::clamp(values[index] / maximum, 0.0f, 1.0f);
+        const float y = minimum.y + size.y * (1.0f - normalized);
         const ImVec2 current(x, y);
         if (index > 0) draw->AddLine(previous, current, color, 2.0f);
         previous = current;
     }
 }
 
-void DrawRateGraph(const char* title, const RateHistory& left, const char* leftLabel, const RateHistory* right, const char* rightLabel, float height)
+void DrawRateGraph(
+    const char* title,
+    const RateHistory& left,
+    const char* leftLabel,
+    const RateHistory* right,
+    const char* rightLabel,
+    float graphHeight)
 {
-    ImGui::Text("%s", title);
+    ImGui::TextUnformatted(title);
+    ImGui::Spacing();
+
     const ImVec2 graphMin = ImGui::GetCursorScreenPos();
     const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-    const ImVec2 graphSize(width, height);
+    const ImVec2 graphSize(width, graphHeight);
     ImDrawList* draw = ImGui::GetWindowDrawList();
-    const ImU32 frameColor = ImGui::GetColorU32(ImGuiCol_Border);
+    const ImU32 border = ImGui::GetColorU32(ImGuiCol_Border);
+    const ImU32 grid = IM_COL32(90, 90, 90, 90);
     const ImU32 leftColor = IM_COL32(80, 180, 255, 255);
     const ImU32 rightColor = IM_COL32(255, 190, 80, 255);
-    draw->AddRect(graphMin, ImVec2(graphMin.x + graphSize.x, graphMin.y + graphSize.y), frameColor);
-    const float maxValue = MaxHistoryValue(left.values(), right ? right->values() : std::deque<float>{});
-    DrawOneLine(draw, graphMin, graphSize, left.values(), maxValue, leftColor);
-    if (right) DrawOneLine(draw, graphMin, graphSize, right->values(), maxValue, rightColor);
+
+    draw->AddRectFilled(
+        graphMin,
+        ImVec2(graphMin.x + graphSize.x, graphMin.y + graphSize.y),
+        IM_COL32(12, 12, 12, 180));
+    for (int line = 1; line < 4; ++line) {
+        const float y = graphMin.y + graphSize.y * (static_cast<float>(line) / 4.0f);
+        draw->AddLine(
+            ImVec2(graphMin.x, y),
+            ImVec2(graphMin.x + graphSize.x, y),
+            grid,
+            1.0f);
+    }
+    draw->AddRect(
+        graphMin,
+        ImVec2(graphMin.x + graphSize.x, graphMin.y + graphSize.y),
+        border);
+
+    const float maximum = MaxHistoryValue(
+        left.values(),
+        right ? &right->values() : nullptr);
+    DrawOneLine(draw, graphMin, graphSize, left.values(), maximum, leftColor);
+    if (right) {
+        DrawOneLine(draw, graphMin, graphSize, right->values(), maximum, rightColor);
+    }
     ImGui::Dummy(graphSize);
-    if (right) ImGui::Text("%s %.1f fps   %s %.1f fps   max %.1f", leftLabel, left.latest(), rightLabel, right->latest(), maxValue);
-    else ImGui::Text("%s %.1f /s   max %.1f", leftLabel, left.latest(), maxValue);
+
+    ImGui::TextColored(
+        ImVec4(0.31f, 0.71f, 1.0f, 1.0f),
+        "%s %.1f%s",
+        leftLabel,
+        left.latest(),
+        right ? " fps" : " /s");
+    if (right) {
+        ImGui::SameLine(0.0f, 24.0f);
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.75f, 0.31f, 1.0f),
+            "%s %.1f fps",
+            rightLabel,
+            right->latest());
+    }
+    ImGui::SameLine(0.0f, 24.0f);
+    ImGui::TextDisabled("scale %.1f", maximum);
     ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+}
+
+float FourButtonWidth()
+{
+    const float available = ImGui::GetContentRegionAvail().x;
+    return std::clamp((available - 36.0f) / 4.0f, 86.0f, 122.0f);
 }
 
 void DrawControlPanel()
 {
     ImGui::TextUnformatted("Plane controls");
-    if (ImGui::Button("Up", ImVec2(80, 28))) GuiControlBridge::RequestMoveUp(); ImGui::SameLine();
-    if (ImGui::Button("Down", ImVec2(80, 28))) GuiControlBridge::RequestMoveDown(); ImGui::SameLine();
-    if (ImGui::Button("Left", ImVec2(80, 28))) GuiControlBridge::RequestMoveLeft(); ImGui::SameLine();
-    if (ImGui::Button("Right", ImVec2(80, 28))) GuiControlBridge::RequestMoveRight();
-    if (ImGui::Button("Size +", ImVec2(80, 28))) GuiControlBridge::RequestSizeIncrease(); ImGui::SameLine();
-    if (ImGui::Button("Size -", ImVec2(80, 28))) GuiControlBridge::RequestSizeDecrease(); ImGui::SameLine();
-    if (ImGui::Button("Near", ImVec2(80, 28))) GuiControlBridge::RequestMoveNear(); ImGui::SameLine();
-    if (ImGui::Button("Far", ImVec2(80, 28))) GuiControlBridge::RequestMoveFar();
-    const bool visible = GuiControlBridge::PlaneVisible();
-    if (ImGui::Button(visible ? "Hide Plane" : "Show Plane", ImVec2(170, 30))) GuiControlBridge::RequestTogglePlaneVisibility();
-    ImGui::SameLine();
-    bool locked = GuiControlBridge::KeyboardControlLocked();
-    if (ImGui::Checkbox("Keyboard operation lock", &locked)) GuiControlBridge::SetKeyboardControlLocked(locked);
-    ImGui::TextWrapped("When Plane is hidden, the VST postprocess mask becomes pass-through. F23 reveal remains available while keyboard operations are locked.");
+    ImGui::SameLine(0.0f, 18.0f);
+    ImGui::TextDisabled("one click = 0.01 m");
+    ImGui::Separator();
     ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(160, 50, 50, 255));
-    if (ImGui::Button("Exit application", ImVec2(180, 32))) RequestApplicationExitFromGui();
-    ImGui::PopStyleColor();
+
+    const float buttonWidth = FourButtonWidth();
+    const ImVec2 buttonSize(buttonWidth, 38.0f);
+
+    ImGui::TextDisabled("Position");
+    if (ImGui::Button("Up", buttonSize)) GuiControlBridge::RequestMoveUp();
+    ImGui::SameLine();
+    if (ImGui::Button("Down", buttonSize)) GuiControlBridge::RequestMoveDown();
+    ImGui::SameLine();
+    if (ImGui::Button("Left", buttonSize)) GuiControlBridge::RequestMoveLeft();
+    ImGui::SameLine();
+    if (ImGui::Button("Right", buttonSize)) GuiControlBridge::RequestMoveRight();
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Size and depth");
+    if (ImGui::Button("Size +", buttonSize)) GuiControlBridge::RequestSizeIncrease();
+    ImGui::SameLine();
+    if (ImGui::Button("Size -", buttonSize)) GuiControlBridge::RequestSizeDecrease();
+    ImGui::SameLine();
+    if (ImGui::Button("Near", buttonSize)) GuiControlBridge::RequestMoveNear();
+    ImGui::SameLine();
+    if (ImGui::Button("Far", buttonSize)) GuiControlBridge::RequestMoveFar();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    const bool visible = GuiControlBridge::PlaneVisible();
+    if (ImGui::Button(
+            visible ? "Hide Plane" : "Show Plane",
+            ImVec2(170.0f, 40.0f))) {
+        GuiControlBridge::RequestTogglePlaneVisibility();
+    }
+    ImGui::SameLine(0.0f, 24.0f);
+    bool locked = GuiControlBridge::KeyboardControlLocked();
+    if (ImGui::Checkbox("Keyboard operation lock", &locked)) {
+        GuiControlBridge::SetKeyboardControlLocked(locked);
+    }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled(
+        "Plane hidden: VST pass-through. Keyboard lock keeps only the postprocess reveal key active.");
+
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(150, 45, 45, 255));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(185, 60, 60, 255));
+    if (ImGui::Button("Exit application", ImVec2(190.0f, 42.0f))) {
+        RequestApplicationExitFromGui();
+    }
+    ImGui::PopStyleColor(2);
 }
 
 void DrawPerformancePanel()
 {
-    auto& perf = Performance();
-    ImGui::TextUnformatted("Performance");
-    DrawRateGraph("Camera FPS", perf.cameraLeft, "Left", &perf.cameraRight, "Right", 80.0f);
-    DrawRateGraph("Video codec FPS", perf.codecLeft, "Left", &perf.codecRight, "Right", 80.0f);
-    DrawRateGraph("VST acquisition", perf.vstLeft, "Left", &perf.vstRight, "Right", 80.0f);
-    DrawRateGraph("Eye tracker acquisition", perf.eye, "Samples", nullptr, nullptr, 80.0f);
-    DrawRateGraph("IMU acquisition", perf.imu, "Samples", nullptr, nullptr, 80.0f);
+    auto& performance = Performance();
+    ImGui::TextUnformatted("Live rates");
+    ImGui::SameLine(0.0f, 16.0f);
+    ImGui::TextDisabled("0.5 s sampling / recent history");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    const float availableHeight = std::max(360.0f, ImGui::GetContentRegionAvail().y);
+    const float graphHeight = std::clamp(
+        availableHeight / 5.0f - 54.0f,
+        72.0f,
+        108.0f);
+
+    ImGui::BeginChild("PerformanceGraphs", ImVec2(0.0f, 0.0f), false);
+    DrawRateGraph(
+        "Camera FPS",
+        performance.cameraLeft,
+        "Left",
+        &performance.cameraRight,
+        "Right",
+        graphHeight);
+    DrawRateGraph(
+        "Video codec FPS",
+        performance.codecLeft,
+        "Left",
+        &performance.codecRight,
+        "Right",
+        graphHeight);
+    DrawRateGraph(
+        "VST acquisition",
+        performance.vstLeft,
+        "Left",
+        &performance.vstRight,
+        "Right",
+        graphHeight);
+    DrawRateGraph(
+        "Eye tracker acquisition",
+        performance.eye,
+        "Samples",
+        nullptr,
+        nullptr,
+        graphHeight);
+    DrawRateGraph(
+        "IMU acquisition",
+        performance.imu,
+        "Samples",
+        nullptr,
+        nullptr,
+        graphHeight);
+    ImGui::EndChild();
 }
 
 void DrawGuiPanels()
 {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const ImVec2 workPos = viewport->WorkPos;
-    const ImVec2 workSize = viewport->WorkSize;
-    const float leftWidth = std::max(420.0f, workSize.x * 0.64f);
-    const float videoHeight = std::max(240.0f, workSize.y * 0.68f);
-    const float controlsHeight = std::max(160.0f, workSize.y - videoHeight);
-    const float rightWidth = std::max(320.0f, workSize.x - leftWidth);
-    const ImGuiWindowFlags panelFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings;
+    if (!viewport) return;
 
-    ImGui::SetNextWindowPos(ImVec2(workPos.x, workPos.y + videoHeight));
-    ImGui::SetNextWindowSize(ImVec2(leftWidth, controlsHeight));
+    const PanelLayout layout = CalculateLayout();
+    const ImVec2 workPos = viewport->WorkPos;
+    constexpr ImGuiWindowFlags panelFlags =
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoCollapse;
+
+    ImGui::SetNextWindowPos(
+        ImVec2(
+            workPos.x + layout.margin,
+            workPos.y + layout.margin + layout.videoHeight + layout.gap),
+        ImGuiCond_Always);
+    ImGui::SetNextWindowSize(
+        ImVec2(layout.leftWidth, layout.controlsHeight),
+        ImGuiCond_Always);
     ImGui::Begin("Controls", nullptr, panelFlags);
     DrawControlPanel();
     ImGui::End();
 
-    ImGui::SetNextWindowPos(ImVec2(workPos.x + leftWidth, workPos.y));
-    ImGui::SetNextWindowSize(ImVec2(rightWidth, workSize.y));
+    ImGui::SetNextWindowPos(
+        ImVec2(
+            workPos.x + layout.margin + layout.leftWidth + layout.gap,
+            workPos.y + layout.margin),
+        ImGuiCond_Always);
+    ImGui::SetNextWindowSize(
+        ImVec2(
+            layout.rightWidth,
+            layout.videoHeight + layout.gap + layout.controlsHeight),
+        ImGuiCond_Always);
     ImGui::Begin("Performance", nullptr, panelFlags);
     DrawPerformancePanel();
     ImGui::End();
@@ -489,26 +772,39 @@ void DrawGuiPanels()
 
 void BeginFrame()
 {
+    ApplySpaciousStyleOnce();
     ImageSideIndex() = 0;
     Reader().refresh();
     Performance().update();
 }
 
-void DrawImageWithLatestGaze(ImTextureRef texture, const ImVec2& imageSize)
+void DrawImageWithLatestGaze(
+    ImTextureRef texture,
+    const ImVec2& imageSize)
 {
     const ImVec2 imageMin = ImGui::GetCursorScreenPos();
     ImGui::Image(texture, imageSize);
+
     const auto& latest = Reader().latest();
-    if (!latest) { ImageSideIndex() = (ImageSideIndex() + 1) % 2; return; }
+    if (!latest) {
+        ImageSideIndex() = (ImageSideIndex() + 1) % 2;
+        return;
+    }
+
     const int sideIndex = ImageSideIndex();
     ImageSideIndex() = (ImageSideIndex() + 1) % 2;
-    DrawGazePoint(sideIndex == 0 ? latest->left : latest->right, imageMin, imageSize);
+    DrawGazePoint(
+        sideIndex == 0 ? latest->left : latest->right,
+        imageMin,
+        imageSize);
 }
 
 ImVec2 PreviewContentRegionAvail()
 {
-    const ImVec2 real = ImGui::GetContentRegionAvail();
-    return ImVec2(std::max(1.0f, real.x * 0.64f), std::max(1.0f, real.y * 0.68f));
+    const PanelLayout layout = CalculateLayout();
+    return ImVec2(
+        std::max(1.0f, layout.leftWidth - 20.0f),
+        std::max(1.0f, layout.videoHeight - 18.0f));
 }
 
 void RenderWithPanels()
@@ -519,6 +815,9 @@ void RenderWithPanels()
 
 BOOL GazeOverlayDestroyWindow(HWND window)
 {
+    // WM_CLOSE reaches DestroyWindow in ImGuiStereoPreview.cpp. Publish the same
+    // graceful-exit request as the GUI button before destroying only the desktop
+    // preview window. The Varjo render thread remains alive for the VST fade.
     RequestApplicationExitFromGui();
     return ::DestroyWindow(window);
 }
@@ -533,9 +832,13 @@ void GazeOverlayNewFrame()
     ImGui::NewFrame();
 }
 
-void GazeOverlayImage(ImTextureRef texture, const ImVec2& imageSize)
+void GazeOverlayImage(
+    ImTextureRef texture,
+    const ImVec2& imageSize)
 {
-    DualIC4Varjo::ImGuiGazeOverlay::DrawImageWithLatestGaze(texture, imageSize);
+    DualIC4Varjo::ImGuiGazeOverlay::DrawImageWithLatestGaze(
+        texture,
+        imageSize);
 }
 
 ImVec2 GazeOverlayGetContentRegionAvail()
