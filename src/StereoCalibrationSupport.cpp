@@ -160,10 +160,11 @@ struct alignas(16) RectificationConstants {
     std::array<float, 4> borderRgba{};
     std::array<float, 4> postprocess0{};
     std::array<float, 4> postprocess1{};
+    std::array<float, 4> postprocess2{};
 };
 
 static_assert(
-    sizeof(RectificationConstants) == 96,
+    sizeof(RectificationConstants) == 112,
     "Unexpected rectification constant layout");
 
 float CheckedFloat(double value)
@@ -181,9 +182,23 @@ float FiniteOr(float value, float fallback) noexcept
     return std::isfinite(value) ? value : fallback;
 }
 
+float ModeToFloat(StereoPostProcessMode mode) noexcept
+{
+    switch (mode) {
+    case StereoPostProcessMode::Darken: return 1.0f;
+    case StereoPostProcessMode::Blur: return 2.0f;
+    case StereoPostProcessMode::None:
+    default:
+        return 0.0f;
+    }
+}
+
 StereoPostProcessSettings SanitizePostProcessSettings(
     StereoPostProcessSettings settings) noexcept
 {
+    if (!settings.enabled) {
+        settings.mode = StereoPostProcessMode::None;
+    }
     settings.centerX01 = std::clamp(
         FiniteOr(settings.centerX01, 0.5f), 0.0f, 1.0f);
     settings.centerY01 = std::clamp(
@@ -194,17 +209,23 @@ StereoPostProcessSettings SanitizePostProcessSettings(
         FiniteOr(settings.edgeSoftnessShortAxis01, 0.03f), 0.0f, 4.0f);
     settings.outsideBrightness = std::clamp(
         FiniteOr(settings.outsideBrightness, 0.5f), 0.0f, 1.0f);
+    settings.blurRadiusPixels = std::clamp(
+        FiniteOr(settings.blurRadiusPixels, 4.0f), 1.0f, 128.0f);
+    settings.blurSigmaPixels = std::clamp(
+        FiniteOr(settings.blurSigmaPixels, 2.0f), 0.01f, 128.0f);
+    settings.blurStrength01 = std::clamp(
+        FiniteOr(settings.blurStrength01, 1.0f), 0.0f, 1.0f);
     return settings;
 }
 
 void ApplyPostProcessConstants(
     RectificationConstants& constants,
     StereoPostProcessSettings settings,
-    float revealAmount01) noexcept
+    float dynamicAmount01) noexcept
 {
     settings = SanitizePostProcessSettings(settings);
-    const float reveal = std::clamp(
-        FiniteOr(revealAmount01, 0.0f), 0.0f, 1.0f);
+    const float dynamicAmount = std::clamp(
+        FiniteOr(dynamicAmount01, 0.0f), 0.0f, 1.0f);
     constants.postprocess0 = {
         settings.centerX01,
         settings.centerY01,
@@ -213,8 +234,14 @@ void ApplyPostProcessConstants(
     };
     constants.postprocess1 = {
         settings.outsideBrightness,
-        reveal,
-        settings.enabled ? 1.0f : 0.0f,
+        dynamicAmount,
+        settings.mode == StereoPostProcessMode::None ? 0.0f : 1.0f,
+        ModeToFloat(settings.mode),
+    };
+    constants.postprocess2 = {
+        settings.blurRadiusPixels,
+        settings.blurSigmaPixels,
+        settings.blurStrength01,
         0.0f,
     };
 }
@@ -223,7 +250,7 @@ RectificationConstants MakeConstants(
     const CalibrationHomography& inverse,
     const std::array<float, 4>& borderRgba,
     const StereoPostProcessSettings& postProcessSettings,
-    float revealAmount01)
+    float dynamicAmount01)
 {
     RectificationConstants result;
     for (std::size_t column = 0;
@@ -237,7 +264,7 @@ RectificationConstants MakeConstants(
             CheckedFloat(inverse.rows[6 + column]);
     }
     result.borderRgba = borderRgba;
-    ApplyPostProcessConstants(result, postProcessSettings, revealAmount01);
+    ApplyPostProcessConstants(result, postProcessSettings, dynamicAmount01);
     return result;
 }
 
@@ -254,7 +281,8 @@ cbuffer RectificationConstants : register(b0)
     float4 inverseRow2;
     float4 borderRgba;
     float4 postprocess0; // xy=center01, z=radius(short-axis), w=edge softness(short-axis)
-    float4 postprocess1; // x=outside brightness, y=reveal amount, z=enabled, w=reserved
+    float4 postprocess1; // x=outside brightness, y=dynamic amount, z=active, w=mode: 0 none, 1 darken, 2 blur
+    float4 postprocess2; // x=blur radius px, y=blur sigma px, z=blur strength, w=reserved
 };
 
 cbuffer XRTextureProcessingFrameConstants : register(b1)
@@ -294,44 +322,17 @@ float4 SampleLinear(float2 sourcePixel)
         fraction.y);
 }
 
-float4 ApplyDarkenPostProcess(float4 color, uint2 pixel)
+float4 SampleRemappedOutputPixel(float2 destinationPixel)
 {
-    if (postprocess1.z < 0.5f) return color;
-
-    const float2 outputSize = float2((float)dstWidth, (float)dstHeight);
-    const float shortAxis = max(1.0f, min(outputSize.x, outputSize.y));
-    const float2 uv = (float2(pixel) + 0.5f) / outputSize;
-    const float2 normalizedDelta = (uv - postprocess0.xy) * outputSize / shortAxis;
-    const float distanceFromCenter = length(normalizedDelta);
-
-    const float radius = max(0.0f, postprocess0.z);
-    const float softness = max(1.0e-5f, postprocess0.w);
-    const float outsideMask = smoothstep(radius, radius + softness, distanceFromCenter);
-
-    const float outsideBrightness = saturate(postprocess1.x);
-    const float reveal = saturate(postprocess1.y);
-    const float darkenFactor = lerp(1.0f, outsideBrightness, outsideMask);
-    const float finalFactor = lerp(darkenFactor, 1.0f, reveal);
-    color.rgb *= finalFactor;
-    return color;
-}
-
-[numthreads(8, 8, 1)]
-void main(uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= dstWidth || id.y >= dstHeight) return;
-
-    const float3 destinationPixel =
-        float3((float)id.x, (float)id.y, 1.0f);
+    const float3 destination = float3(destinationPixel, 1.0f);
     const float3 sourceH = float3(
-        dot(inverseRow0.xyz, destinationPixel),
-        dot(inverseRow1.xyz, destinationPixel),
-        dot(inverseRow2.xyz, destinationPixel));
+        dot(inverseRow0.xyz, destination),
+        dot(inverseRow1.xyz, destination),
+        dot(inverseRow2.xyz, destination));
 
     if (!isfinite(sourceH.z) ||
         abs(sourceH.z) < 1.0e-8f) {
-        xrOutput[id.xy] = borderRgba;
-        return;
+        return borderRgba;
     }
 
     const float2 sourcePixel = sourceH.xy / sourceH.z;
@@ -340,13 +341,85 @@ void main(uint3 id : SV_DispatchThreadID)
         sourcePixel.y <= -1.0f ||
         sourcePixel.x >= (float)srcWidth ||
         sourcePixel.y >= (float)srcHeight) {
-        xrOutput[id.xy] = borderRgba;
-        return;
+        return borderRgba;
     }
 
-    xrOutput[id.xy] = ApplyDarkenPostProcess(
-        SampleLinear(sourcePixel),
-        id.xy);
+    return SampleLinear(sourcePixel);
+}
+
+float OutsideMaskForPixel(float2 pixel)
+{
+    const float2 outputSize = max(
+        float2((float)dstWidth, (float)dstHeight),
+        float2(1.0f, 1.0f));
+    const float shortAxis = max(1.0f, min(outputSize.x, outputSize.y));
+    const float2 uv = (pixel + 0.5f) / outputSize;
+    const float2 normalizedDelta = (uv - postprocess0.xy) * outputSize / shortAxis;
+    const float distanceFromCenter = length(normalizedDelta);
+
+    const float radius = max(0.0f, postprocess0.z);
+    const float softness = max(1.0e-5f, postprocess0.w);
+    return smoothstep(radius - softness, radius + softness, distanceFromCenter);
+}
+
+float2 ClampOutputPixel(float2 pixel)
+{
+    return clamp(
+        pixel,
+        float2(0.0f, 0.0f),
+        max(float2((float)dstWidth - 1.0f, (float)dstHeight - 1.0f), float2(0.0f, 0.0f)));
+}
+
+float4 Blur9Remapped(float2 pixel, float radiusPx)
+{
+    const float r = max(1.0f, round(radiusPx));
+    float4 sum = 0.0f;
+    sum += SampleRemappedOutputPixel(ClampOutputPixel(pixel + float2(-r, -r))) * 1.0f;
+    sum += SampleRemappedOutputPixel(ClampOutputPixel(pixel + float2( 0, -r))) * 2.0f;
+    sum += SampleRemappedOutputPixel(ClampOutputPixel(pixel + float2( r, -r))) * 1.0f;
+    sum += SampleRemappedOutputPixel(ClampOutputPixel(pixel + float2(-r,  0))) * 2.0f;
+    sum += SampleRemappedOutputPixel(ClampOutputPixel(pixel + float2( 0,  0))) * 4.0f;
+    sum += SampleRemappedOutputPixel(ClampOutputPixel(pixel + float2( r,  0))) * 2.0f;
+    sum += SampleRemappedOutputPixel(ClampOutputPixel(pixel + float2(-r,  r))) * 1.0f;
+    sum += SampleRemappedOutputPixel(ClampOutputPixel(pixel + float2( 0,  r))) * 2.0f;
+    sum += SampleRemappedOutputPixel(ClampOutputPixel(pixel + float2( r,  r))) * 1.0f;
+    return sum / 16.0f;
+}
+
+float4 ApplyPostProcess(float4 color, float2 pixel)
+{
+    if (postprocess1.z < 0.5f) return color;
+
+    const int mode = (int)round(postprocess1.w);
+    const float outsideMask = OutsideMaskForPixel(pixel);
+
+    if (mode == 1) {
+        const float outsideBrightness = saturate(postprocess1.x);
+        const float darkenFactor = lerp(1.0f, outsideBrightness, outsideMask);
+        color.rgb *= darkenFactor;
+        return color;
+    }
+
+    if (mode == 2) {
+        const float blurStrength = saturate(postprocess2.z);
+        const float blurAmount = outsideMask * blurStrength;
+        if (blurAmount <= 1.0e-5f) return color;
+        const float blurRadiusPx = max(postprocess2.x, 1.0f);
+        const float4 blurred = Blur9Remapped(pixel, blurRadiusPx);
+        return lerp(color, blurred, blurAmount);
+    }
+
+    return color;
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= dstWidth || id.y >= dstHeight) return;
+
+    const float2 destinationPixel = float2((float)id.x, (float)id.y);
+    const float4 color = SampleRemappedOutputPixel(destinationPixel);
+    xrOutput[id.xy] = ApplyPostProcess(color, destinationPixel);
 }
 )hlsl";
 }
@@ -365,7 +438,7 @@ VarjoXR::TextureProcessingDesc MakeProcessing(
     result.entryPoint = "main";
     result.target = "cs_5_0";
     result.sourceName =
-        "DualIC4Varjo_StereoRemapDarkenPostProcess.hlsl";
+        "DualIC4Varjo_StereoRemapPostProcess.hlsl";
     result.outputSize = {
         outputSize.width,
         outputSize.height,
@@ -382,7 +455,7 @@ void UpdatePostProcessStateForEye(
     VarjoXR::XRPlane& plane,
     VarjoXR::Eye eye,
     const StereoPostProcessSettings& settings,
-    float revealAmount01) noexcept
+    float dynamicAmount01) noexcept
 {
     auto& processing = plane.material(eye).processing;
     auto& data = processing.userConstants.data;
@@ -392,7 +465,7 @@ void UpdatePostProcessStateForEye(
 
     RectificationConstants constants{};
     std::memcpy(&constants, data.data(), sizeof(constants));
-    ApplyPostProcessConstants(constants, settings, revealAmount01);
+    ApplyPostProcessConstants(constants, settings, dynamicAmount01);
     processing.userConstants.set(constants);
 }
 
@@ -554,18 +627,18 @@ void ApplyCalibrationToPlane(
 void UpdatePlanePostProcessState(
     VarjoXR::XRPlane& plane,
     const StereoPostProcessSettings& settings,
-    float revealAmount01)
+    float dynamicAmount01)
 {
     UpdatePostProcessStateForEye(
         plane,
         VarjoXR::Eye::Left,
         settings,
-        revealAmount01);
+        dynamicAmount01);
     UpdatePostProcessStateForEye(
         plane,
         VarjoXR::Eye::Right,
         settings,
-        revealAmount01);
+        dynamicAmount01);
 }
 
 void UpdatePlaneAspectFromCalibration(
