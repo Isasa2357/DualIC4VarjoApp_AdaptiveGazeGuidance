@@ -23,7 +23,10 @@ struct RawStereoNvencRecorderConfig {
         IC4Ext::FrameSyncTimestampSource::HostReceived;
     std::uint32_t constantQp = 18;
     std::size_t maximumPendingGpuPairs = 32;
-    bool remuxToMp4 = true;
+
+    // Keep shutdown short for Varjo. The app writes raw .h264 only; MP4 remux is
+    // performed offline by the user after the application has exited.
+    bool remuxToMp4 = false;
 };
 
 class RawStereoNvencRecorder final {
