@@ -8,6 +8,7 @@
 #include "CoordinatedCameraCaptureThread.hpp"
 #include "RawStereoNvencRecordingIntegration.hpp"
 #include "CalibrationRuntimeBridge.hpp"
+#include "PostProcessDefaultOverrides.hpp"
 
 // The included application defines these macros itself. Undefine them here to
 // avoid C4005 while keeping Windows headers already parsed with NOMINMAX.
@@ -29,6 +30,7 @@
 #define createPlane(...) createPlane(__VA_ARGS__); \
     DualIC4Varjo::CalibrationRuntimeBridge::RegisterPlane(plane)
 #define render() render(); \
+    DualIC4Varjo::PostProcessDefaultOverrides::ApplyOnce(); \
     DualIC4Varjo::CalibrationRuntimeBridge::ApplyPlaneInputAfterRender(plane)
 
 // Keep the original Q/R/Esc termination semantics, but move the OpenCV window
