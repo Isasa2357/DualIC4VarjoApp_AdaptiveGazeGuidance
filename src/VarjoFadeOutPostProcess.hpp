@@ -16,6 +16,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -38,6 +39,14 @@ public:
     struct Config {
         float fadeSeconds = 2.0f;
     };
+
+    struct PlaneMaskRect {
+        float x0 = 2.0f;
+        float y0 = 2.0f;
+        float x1 = -1.0f;
+        float y1 = -1.0f;
+    };
+    using PlaneMaskRects = std::array<PlaneMaskRect, 4>;
 
     VarjoFadeOutPostProcess(
         std::shared_ptr<varjo_Session> session,
@@ -64,11 +73,11 @@ public:
         lastError_.clear();
 
         if (!session_) {
-            lastError_ = "fade-out postprocess requires a Varjo session";
+            lastError_ = "video postprocess requires a Varjo session";
             return false;
         }
         if (!commandQueue_) {
-            lastError_ = "fade-out postprocess requires a D3D12 command queue";
+            lastError_ = "video postprocess requires a D3D12 command queue";
             return false;
         }
 
@@ -87,7 +96,7 @@ public:
         }
 
         auto shaderConfig = VarjoVideoPostProcessShader::makeVideoPostProcessConfig(
-            static_cast<int64_t>(sizeof(FadeConstants)),
+            static_cast<int64_t>(sizeof(ShaderConstants)),
             8,
             0,
             varjo_ShaderFlag_VideoPostProcess_None);
@@ -102,9 +111,8 @@ public:
             return false;
         }
 
-        FadeConstants constants{};
-        constants.fadeAmount = 0.0f;
-        if (!shader_->submitConstantBuffer(constants)) {
+        constants_ = makePassThroughConstants();
+        if (!shader_->submitConstantBuffer(constants_)) {
             lastError_ = shader_->lastError();
             shader_.reset();
             return false;
@@ -114,13 +122,49 @@ public:
         // versions this returns an opaque "Unknown error" before the video
         // postprocess path is actively used, even though the shader was locked,
         // configured, and supplied with constants successfully. A configured
-        // shader is not applied until it is explicitly enabled, so the initial
-        // false transition is unnecessary. Enable it only when Esc starts the
-        // fade-out, after varjo_MRSetVideoRender(true).
+        // shader is not applied until it is explicitly enabled.
         initialized_ = true;
-        started_.store(false, std::memory_order_release);
+        shaderEnabled_.store(false, std::memory_order_release);
+        fadeStarted_.store(false, std::memory_order_release);
         completed_.store(false, std::memory_order_release);
-        std::cout << "[FADE] VST fade-out shader configured; will enable on Esc\n";
+        std::cout
+            << "[VST_POSTPROCESS] shader configured; green mask will enable after calibration, "
+            << "fade-out will take over on Esc\n";
+        return true;
+    }
+
+    bool updateGreenOutsidePlane(const PlaneMaskRects& rects)
+    {
+        if (!initialize()) return false;
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (fadeStarted_.load(std::memory_order_acquire)) return true;
+
+        lastError_.clear();
+        constants_ = makePassThroughConstants();
+        constants_.mode = 1.0f;
+        constants_.fadeAmount = 0.0f;
+        for (std::size_t view = 0; view < rects.size(); ++view) {
+            constants_.planeRects[view][0] = rects[view].x0;
+            constants_.planeRects[view][1] = rects[view].y0;
+            constants_.planeRects[view][2] = rects[view].x1;
+            constants_.planeRects[view][3] = rects[view].y1;
+        }
+
+        if (!shader_->submitConstantBuffer(constants_)) {
+            lastError_ = shader_->lastError();
+            return false;
+        }
+        if (!ensureShaderEnabledLocked("green outside-plane mask")) {
+            return false;
+        }
+
+        if (!greenModeLogged_) {
+            greenModeLogged_ = true;
+            std::cout
+                << "[VST_POSTPROCESS] green outside-plane mask enabled "
+                << "(Plane rect is passed through)\n";
+        }
         return true;
     }
 
@@ -129,35 +173,32 @@ public:
         if (!initialize()) return false;
 
         std::lock_guard<std::mutex> lock(mutex_);
-        if (started_.load(std::memory_order_acquire)) return true;
+        if (fadeStarted_.load(std::memory_order_acquire)) return true;
 
         lastError_.clear();
         stopWorkerRequested_.store(false, std::memory_order_release);
         completed_.store(false, std::memory_order_release);
 
-        varjo_GetError(session_.get());
-        varjo_MRSetVideoRender(session_.get(), varjo_True);
-        const varjo_Error videoRenderError = varjo_GetError(session_.get());
-        if (videoRenderError != varjo_NoError) {
-            lastError_ = std::string("varjo_MRSetVideoRender(true) failed: ") +
-                safeVarjoErrorDesc(videoRenderError);
-            return false;
-        }
+        if (!enableVideoRenderLocked()) return false;
 
-        FadeConstants constants{};
-        constants.fadeAmount = 0.0f;
-        if (!shader_->submitConstantBuffer(constants)) {
+        constants_ = makePassThroughConstants();
+        constants_.mode = 2.0f;
+        constants_.fadeAmount = 0.0f;
+        if (!shader_->submitConstantBuffer(constants_)) {
             lastError_ = shader_->lastError();
             return false;
         }
-        if (!shader_->setEnabled(true)) {
-            lastError_ = shader_->lastError();
-            return false;
+        if (!shaderEnabled_.load(std::memory_order_acquire)) {
+            if (!shader_->setEnabled(true)) {
+                lastError_ = shader_->lastError();
+                return false;
+            }
+            shaderEnabled_.store(true, std::memory_order_release);
         }
 
-        started_.store(true, std::memory_order_release);
+        fadeStarted_.store(true, std::memory_order_release);
         worker_ = std::thread([this] { workerMain(); });
-        std::cout << "[FADE] VST fade-out shader enabled\n";
+        std::cout << "[FADE] VST fade-out shader mode enabled\n";
         return true;
     }
 
@@ -175,17 +216,19 @@ public:
             try { worker_.join(); } catch (...) {}
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        if (shader_ && started_.load(std::memory_order_acquire)) {
+        if (shader_ && shaderEnabled_.load(std::memory_order_acquire)) {
             try { shader_->setEnabled(false); } catch (...) {}
         }
         shader_.reset();
         initialized_ = false;
-        started_.store(false, std::memory_order_release);
+        shaderEnabled_.store(false, std::memory_order_release);
+        fadeStarted_.store(false, std::memory_order_release);
+        greenModeLogged_ = false;
     }
 
     bool started() const noexcept
     {
-        return started_.load(std::memory_order_acquire);
+        return fadeStarted_.load(std::memory_order_acquire);
     }
 
     bool completed() const noexcept
@@ -200,18 +243,60 @@ public:
     }
 
 private:
-    struct alignas(16) FadeConstants {
-        float fadeAmount = 0.0f;
-        float padding0 = 0.0f;
-        float padding1 = 0.0f;
-        float padding2 = 0.0f;
+    struct alignas(16) ShaderConstants {
+        float mode = 0.0f;       // 0: passthrough, 1: green outside Plane, 2: fade-out
+        float fadeAmount = 0.0f; // Used only when mode == 2
+        float reserved0 = 0.0f;
+        float reserved1 = 0.0f;
+        float planeRects[4][4]{}; // x0, y0, x1, y1 in current view normalized coordinates
     };
-    static_assert(sizeof(FadeConstants) == 16, "fade constants must stay 16 bytes");
+    static_assert(sizeof(ShaderConstants) == 80, "shader constants must remain 16-byte aligned");
+
+    static ShaderConstants makePassThroughConstants() noexcept
+    {
+        ShaderConstants constants{};
+        constants.mode = 0.0f;
+        constants.fadeAmount = 0.0f;
+        for (auto& rect : constants.planeRects) {
+            rect[0] = 2.0f;
+            rect[1] = 2.0f;
+            rect[2] = -1.0f;
+            rect[3] = -1.0f;
+        }
+        return constants;
+    }
 
     static const char* safeVarjoErrorDesc(varjo_Error error) noexcept
     {
         const char* description = varjo_GetErrorDesc(error);
         return description ? description : "unknown Varjo error";
+    }
+
+    bool enableVideoRenderLocked()
+    {
+        varjo_GetError(session_.get());
+        varjo_MRSetVideoRender(session_.get(), varjo_True);
+        const varjo_Error videoRenderError = varjo_GetError(session_.get());
+        if (videoRenderError != varjo_NoError) {
+            lastError_ = std::string("varjo_MRSetVideoRender(true) failed: ") +
+                safeVarjoErrorDesc(videoRenderError);
+            return false;
+        }
+        return true;
+    }
+
+    bool ensureShaderEnabledLocked(const char* reason)
+    {
+        if (!enableVideoRenderLocked()) return false;
+        if (shaderEnabled_.load(std::memory_order_acquire)) return true;
+        if (!shader_->setEnabled(true)) {
+            lastError_ = shader_->lastError();
+            return false;
+        }
+        shaderEnabled_.store(true, std::memory_order_release);
+        std::cout << "[VST_POSTPROCESS] shader enabled for "
+                  << (reason ? reason : "postprocess") << '\n';
+        return true;
     }
 
     static const char* hlslSource() noexcept
@@ -239,11 +324,22 @@ cbuffer VarjoVideoPostProcessConstants : register(b0)
     int2 varjoPadding;
 };
 
-cbuffer FadeOutConstants : register(b1)
+cbuffer DualIC4VarjoPostProcessConstants : register(b1)
 {
+    float mode;
     float fadeAmount;
-    float3 userPadding;
+    float reserved0;
+    float reserved1;
+    float4 planeRects[4];
 };
+
+bool IsInsideRect(float2 uv, float4 rect)
+{
+    if (rect.z <= rect.x || rect.w <= rect.y) {
+        return false;
+    }
+    return uv.x >= rect.x && uv.x <= rect.z && uv.y >= rect.y && uv.y <= rect.w;
+}
 
 [numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -256,9 +352,27 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
 
     const float4 source = inputTex.Load(int3(pixel, 0));
-    const float fade = saturate(fadeAmount);
-    const float3 fadedRgb = lerp(source.rgb, float3(0.0f, 0.0f, 0.0f), fade);
-    outputTex[pixel] = float4(fadedRgb, source.a);
+
+    if (mode > 1.5f) {
+        const float fade = saturate(fadeAmount);
+        const float3 fadedRgb = lerp(source.rgb, float3(0.0f, 0.0f, 0.0f), fade);
+        outputTex[pixel] = float4(fadedRgb, source.a);
+        return;
+    }
+
+    if (mode > 0.5f) {
+        const float2 destSize = max(float2(destRect.zw), float2(1.0f, 1.0f));
+        const float2 uv = (float2(pixel) + 0.5f - float2(destRect.xy)) / destSize;
+        const int rectIndex = clamp(viewIndex, 0, 3);
+        if (IsInsideRect(uv, planeRects[rectIndex])) {
+            outputTex[pixel] = source;
+        } else {
+            outputTex[pixel] = float4(0.0f, 1.0f, 0.0f, source.a);
+        }
+        return;
+    }
+
+    outputTex[pixel] = source;
 }
 )hlsl";
     }
@@ -274,7 +388,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
         const HRESULT hr = D3DCompile(
             source,
             std::strlen(source),
-            "DualIC4Varjo_FadeOutVideoPostProcess.hlsl",
+            "DualIC4Varjo_VideoPostProcessMaskAndFade.hlsl",
             nullptr,
             nullptr,
             "main",
@@ -285,7 +399,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
             &errors);
         if (FAILED(hr)) {
             std::ostringstream message;
-            message << "D3DCompile failed for fade-out video postprocess: HRESULT=0x"
+            message << "D3DCompile failed for video postprocess mask/fade shader: HRESULT=0x"
                     << std::hex << static_cast<unsigned long>(hr);
             if (errors && errors->GetBufferPointer()) {
                 message << "\n" << static_cast<const char*>(errors->GetBufferPointer());
@@ -307,12 +421,12 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
                 const auto now = std::chrono::steady_clock::now();
                 const float elapsed = std::chrono::duration<float>(now - begin).count();
                 const float fade = std::clamp(elapsed / durationSeconds, 0.0f, 1.0f);
-                FadeConstants constants{};
-                constants.fadeAmount = fade;
 
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
-                    if (shader_ && !shader_->submitConstantBuffer(constants)) {
+                    constants_.mode = 2.0f;
+                    constants_.fadeAmount = fade;
+                    if (shader_ && !shader_->submitConstantBuffer(constants_)) {
                         lastError_ = shader_->lastError();
                         break;
                     }
@@ -322,11 +436,11 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
                 std::this_thread::sleep_for(std::chrono::milliseconds(16));
             }
 
-            FadeConstants finalConstants{};
-            finalConstants.fadeAmount = 1.0f;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                if (shader_) shader_->submitConstantBuffer(finalConstants);
+                constants_.mode = 2.0f;
+                constants_.fadeAmount = 1.0f;
+                if (shader_) shader_->submitConstantBuffer(constants_);
             }
             completed_.store(true, std::memory_order_release);
             std::cout << "[FADE] VST fade-out constants reached 1.0\n";
@@ -336,7 +450,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
             completed_.store(true, std::memory_order_release);
         } catch (...) {
             std::lock_guard<std::mutex> lock(mutex_);
-            lastError_ = "unknown fade-out postprocess worker failure";
+            lastError_ = "unknown video postprocess worker failure";
             completed_.store(true, std::memory_order_release);
         }
     }
@@ -348,10 +462,13 @@ private:
     std::unique_ptr<VarjoVideoPostProcessShader> shader_;
     mutable std::mutex mutex_;
     std::thread worker_;
+    ShaderConstants constants_{};
     std::atomic_bool initialized_{false};
-    std::atomic_bool started_{false};
+    std::atomic_bool shaderEnabled_{false};
+    std::atomic_bool fadeStarted_{false};
     std::atomic_bool completed_{false};
     std::atomic_bool stopWorkerRequested_{false};
+    bool greenModeLogged_ = false;
     std::string lastError_;
 };
 
