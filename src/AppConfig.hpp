@@ -45,7 +45,7 @@ struct AppConfig {
     float planeHeightMeters = 0.0f;
     float planeX = 0.0f;
     float planeY = 0.0f;
-    float planeDistanceMeters = 1.0f;
+    float planeDistanceMeters = 1.6f;
     VarjoXR::PlacementMode placementMode = VarjoXR::PlacementMode::HeadRelative;
     std::size_t displayRingSize = 4;
 
