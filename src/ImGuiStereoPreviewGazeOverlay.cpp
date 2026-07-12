@@ -413,7 +413,7 @@ struct PanelLayout {
 PanelLayout CalculateLayout()
 {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const ImVec2 workSize = viewport ? viewport->WorkSize : ImVec2(1600.0f, 800.0f);
+    const ImVec2 workSize = viewport ? viewport->WorkSize : ImVec2(1600.0f, 1020.0f);
 
     PanelLayout layout;
     const float usableWidth = std::max(
@@ -426,12 +426,12 @@ PanelLayout CalculateLayout()
     layout.rightWidth = rightWidth;
     layout.leftWidth = std::max(320.0f, usableWidth - layout.gap - rightWidth);
 
-    float controlsHeight = std::clamp(workSize.y * 0.34f, 250.0f, 315.0f);
+    float controlsHeight = std::clamp(workSize.y * 0.36f, 340.0f, 430.0f);
     float videoHeight = workSize.y - layout.margin * 2.0f - layout.gap - controlsHeight;
-    if (videoHeight < 280.0f) {
-        videoHeight = 280.0f;
+    if (videoHeight < 260.0f) {
+        videoHeight = 260.0f;
         controlsHeight = std::max(
-            180.0f,
+            260.0f,
             workSize.y - layout.margin * 2.0f - layout.gap - videoHeight);
     }
     layout.videoHeight = videoHeight;
@@ -649,13 +649,11 @@ void DrawControlPanel()
     ImGui::Separator();
     ImGui::Spacing();
 
-    const bool visible = GuiControlBridge::PlaneVisible();
-    if (ImGui::Button(
-            visible ? "Hide Plane" : "Show Plane",
-            ImVec2(170.0f, 40.0f))) {
+    bool showPlane = GuiControlBridge::PlaneVisible();
+    if (ImGui::Checkbox("Show Plane", &showPlane)) {
         GuiControlBridge::RequestTogglePlaneVisibility();
     }
-    ImGui::SameLine(0.0f, 24.0f);
+    ImGui::SameLine(0.0f, 32.0f);
     bool locked = GuiControlBridge::KeyboardControlLocked();
     if (ImGui::Checkbox("Keyboard operation lock", &locked)) {
         GuiControlBridge::SetKeyboardControlLocked(locked);
@@ -822,6 +820,38 @@ BOOL GazeOverlayDestroyWindow(HWND window)
     return ::DestroyWindow(window);
 }
 
+HWND WINAPI GazeOverlayCreateWindowW(
+    LPCWSTR className,
+    LPCWSTR windowName,
+    DWORD style,
+    int x,
+    int y,
+    int width,
+    int height,
+    HWND parent,
+    HMENU menu,
+    HINSTANCE instance,
+    LPVOID parameter)
+{
+    // The integrated preview now contains video, controls, and performance plots.
+    // Keep the user-specified width but enforce a taller parent window so the
+    // Controls panel is visible without immediate scrolling at the old 1600x800
+    // default.
+    const int tallerHeight = std::max(height, 1080);
+    return ::CreateWindowW(
+        className,
+        windowName,
+        style,
+        x,
+        y,
+        width,
+        tallerHeight,
+        parent,
+        menu,
+        instance,
+        parameter);
+}
+
 } // namespace DualIC4Varjo::ImGuiGazeOverlay
 
 namespace ImGui {
@@ -858,7 +888,9 @@ void GazeOverlayRender()
 #define GetContentRegionAvail GazeOverlayGetContentRegionAvail
 #define Render GazeOverlayRender
 #define DestroyWindow DualIC4Varjo::ImGuiGazeOverlay::GazeOverlayDestroyWindow
+#define CreateWindowW DualIC4Varjo::ImGuiGazeOverlay::GazeOverlayCreateWindowW
 #include "ImGuiStereoPreview.cpp"
+#undef CreateWindowW
 #undef DestroyWindow
 #undef Render
 #undef GetContentRegionAvail
