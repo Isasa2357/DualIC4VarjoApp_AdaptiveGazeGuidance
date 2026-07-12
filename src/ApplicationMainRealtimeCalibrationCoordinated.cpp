@@ -9,6 +9,7 @@
 #include "RawStereoNvencRecordingIntegration.hpp"
 #include "CalibrationRuntimeBridge.hpp"
 #include "PostProcessDefaultOverrides.hpp"
+#include "FadeOutPostProcessIntegration.hpp"
 
 // The included application defines these macros itself. Undefine them here to
 // avoid C4005 while keeping Windows headers already parsed with NOMINMAX.
@@ -21,17 +22,26 @@
 #define D3D12CameraCaptureThread CoordinatedD3D12CameraCaptureThread
 #define D3D12FrameSyncThread RecordingD3D12FrameSyncThread
 #define StereoDisplayTextureRing RecordingStereoDisplayTextureRing
-#define RenderedFrameMetadataLogger RecordingRenderedFrameMetadataLogger
+#define RenderedFrameMetadataLogger FadeOutRenderedFrameMetadataLogger
+
+// Intercept only calls inside the included application translation unit. Before
+// the post-calibration fade-out postprocess is created, this delegates directly
+// to ::GetAsyncKeyState. After that, Esc starts the 2-second VST fade-out and
+// is reported to the application only when the fade is complete.
+#define GetAsyncKeyState DualIC4Varjo::FadeOutPostProcessIntegration::GetAsyncKeyState
 
 // Register the Plane immediately after XRSpace::createPlane() returns. The
-// render-token replacement applies calibration-only keyboard input on the
-// Varjo render thread, avoiding concurrent XRPlane mutation from the OpenCV
-// calibration thread.
+// render-token replacement applies keyboard input on the Varjo render thread,
+// and the fade visibility hook forces the Plane transparent during shutdown
+// fade-out without mutating XRPlane from the main thread.
 #define createPlane(...) createPlane(__VA_ARGS__); \
-    DualIC4Varjo::CalibrationRuntimeBridge::RegisterPlane(plane)
+    DualIC4Varjo::CalibrationRuntimeBridge::RegisterPlane(plane); \
+    DualIC4Varjo::FadeOutPostProcessIntegration::RegisterRuntime( \
+        session->shared(), core->GetDirectCommandQueue())
 #define render() render(); \
     DualIC4Varjo::PostProcessDefaultOverrides::ApplyOnce(); \
-    DualIC4Varjo::CalibrationRuntimeBridge::ApplyPlaneInputAfterRender(plane)
+    DualIC4Varjo::CalibrationRuntimeBridge::ApplyPlaneInputAfterRender(plane); \
+    DualIC4Varjo::FadeOutPostProcessIntegration::ApplyPlaneFadeVisibility(plane)
 
 // Keep the original Q/R/Esc termination semantics, but move the OpenCV window
 // offscreen and report quality through the console. During calibration,
@@ -46,6 +56,7 @@
 #undef RunCheckerboardStereoCalibration
 #undef render
 #undef createPlane
+#undef GetAsyncKeyState
 #undef RenderedFrameMetadataLogger
 #undef StereoDisplayTextureRing
 #undef D3D12FrameSyncThread
