@@ -74,10 +74,14 @@ inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
     // Do not let the caller set gStopRequested until the two-second VST fade has
     // completed. This keeps the Varjo render thread alive while the compositor
     // transitions from the current blur+darken level to black.
-    if (result.aborted || GuiControlBridge::ApplicationExitRequested()) {
-        GuiControlBridge::RequestApplicationExit();
+    const bool externallyRequested =
+        GuiControlBridge::ApplicationExitRequested();
+    if (result.aborted || externallyRequested) {
+        if (!externallyRequested) {
+            GuiControlBridge::RequestApplicationExit();
+        }
         FinishFadeBeforeReturningToCaller(
-            GuiControlBridge::ApplicationExitRequested()
+            externallyRequested
                 ? "GUI/Ctrl+C during calibration"
                 : "calibration abort");
     }
