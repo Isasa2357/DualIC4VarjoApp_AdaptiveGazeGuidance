@@ -361,9 +361,15 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
 
     if (mode > 0.5f) {
-        const float2 destSize = max(float2(destRect.zw), float2(1.0f, 1.0f));
-        const float2 uv = (float2(pixel) + 0.5f - float2(destRect.xy)) / destSize;
-        const int rectIndex = clamp(viewIndex, 0, 3);
+        const float2 destSize = max(
+            float2((float)destRect.z, (float)destRect.w),
+            float2(1.0f, 1.0f));
+        const float2 uv = (
+            float2((float)pixel.x, (float)pixel.y) + 0.5f -
+            float2((float)destRect.x, (float)destRect.y)) / destSize;
+        int rectIndex = viewIndex;
+        if (rectIndex < 0) rectIndex = 0;
+        if (rectIndex > 3) rectIndex = 3;
         if (IsInsideRect(uv, planeRects[rectIndex])) {
             outputTex[pixel] = source;
         } else {
