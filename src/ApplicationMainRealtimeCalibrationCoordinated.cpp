@@ -7,6 +7,7 @@
 
 #include "CoordinatedCameraCaptureThread.hpp"
 #include "RawStereoNvencRecordingIntegration.hpp"
+#include "BlackCirclePlaneIntegration.hpp"
 #include "CalibrationRuntimeBridge.hpp"
 #include "FadeOutPostProcessIntegration.hpp"
 #include "GracefulShutdownIntegration.hpp"
@@ -43,20 +44,27 @@
 // is enabled. The postprocess reveal key remains handled by the runtime bridge.
 #define GetAsyncKeyState DualIC4Varjo::KeyboardLockIntegration::GetAsyncKeyState
 
-// Register the Plane immediately after XRSpace::createPlane() returns. The
-// render-token replacement applies GUI/keyboard input on the Varjo render thread,
-// starts/updates the VST blur+darken mask from the first visible Plane frame,
-// publishes camera counters, captures personalization state, and applies shutdown
-// Plane transparency.
+// Register the video Plane immediately after XRSpace::createPlane() returns and
+// create a second VarjoXR Plane for the black circle. The circle Plane is kept
+// transparent until it has been synchronized to the video Plane.
 #define createPlane(...) createPlane(__VA_ARGS__); \
+    auto& blackCirclePlane = space.createPlane({1.0f, 1.0f}); \
+    DualIC4Varjo::BlackCirclePlaneIntegration::Initialize(blackCirclePlane); \
     DualIC4Varjo::CalibrationRuntimeBridge::RegisterPlane(plane); \
     DualIC4Varjo::FadeOutPostProcessIntegration::RegisterRuntime( \
         session->shared(), core->GetDirectCommandQueue())
+
+// The render-token replacement applies GUI/keyboard input on the Varjo render
+// thread, synchronizes the VarjoXR black circle Plane for the next rendered
+// frame, starts/updates the VST blur+darken mask from the same Plane projection,
+// publishes camera counters, captures personalization state, and applies shutdown
+// Plane transparency.
 #define render() render(); \
     DualIC4Varjo::PostProcessDefaultOverrides::ApplyOnce(); \
     DualIC4Varjo::GuiPerformanceStats::SubmitCameraReadFrames( \
         leftCamera.stats().readFrames, rightCamera.stats().readFrames); \
     DualIC4Varjo::GuiPlaneControlIntegration::ApplyPlaneInputAfterRender(plane); \
+    DualIC4Varjo::BlackCirclePlaneIntegration::SyncToVideoPlane(plane, blackCirclePlane); \
     DualIC4Varjo::PersonalizationSettings::CapturePlaneState(plane); \
     DualIC4Varjo::FadeOutPostProcessIntegration::UpdatePlaneMaskFromFrame( \
         plane, d3dBackend.frameInfoSnapshot()); \
