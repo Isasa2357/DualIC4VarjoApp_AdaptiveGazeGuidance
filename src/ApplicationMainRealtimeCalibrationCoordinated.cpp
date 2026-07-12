@@ -8,10 +8,11 @@
 #include "CoordinatedCameraCaptureThread.hpp"
 #include "RawStereoNvencRecordingIntegration.hpp"
 #include "CalibrationRuntimeBridge.hpp"
+#include "FadeOutPostProcessIntegration.hpp"
+#include "GracefulShutdownIntegration.hpp"
 #include "GuiPerformanceStats.hpp"
 #include "GuiPlaneControlIntegration.hpp"
 #include "PostProcessDefaultOverrides.hpp"
-#include "FadeOutPostProcessIntegration.hpp"
 
 // The included application defines these macros itself. Undefine them here to
 // avoid C4005 while keeping Windows headers already parsed with NOMINMAX.
@@ -26,18 +27,22 @@
 #define StereoDisplayTextureRing RecordingStereoDisplayTextureRing
 #define RenderedFrameMetadataLogger FadeOutRenderedFrameMetadataLogger
 
-// Intercept only calls inside the included application translation unit. Before
-// the post-calibration fade-out postprocess is created, this delegates directly
-// to ::GetAsyncKeyState. After that, Esc starts the 2-second VST fade-out and
-// is reported to the application only when the fade is complete.
+// Register our console handler instead of the legacy handler that directly sets
+// gStopRequested. Ctrl+C now publishes an application-exit request; the normal
+// Esc polling path keeps rendering until the VST fade has completed.
+#define SetConsoleCtrlHandler(handler, add) \
+    ::SetConsoleCtrlHandler( \
+        DualIC4Varjo::GracefulShutdownIntegration::ConsoleControlHandler, \
+        add)
+
+// Intercept only calls inside the included application translation unit. Esc,
+// GUI Exit, ImGui window close, and Ctrl+C all enter the same two-second fade.
 #define GetAsyncKeyState DualIC4Varjo::FadeOutPostProcessIntegration::GetAsyncKeyState
 
 // Register the Plane immediately after XRSpace::createPlane() returns. The
 // render-token replacement applies GUI/keyboard input on the Varjo render thread,
-// updates the VST postprocess mask from the same frame's Plane projection,
-// publishes camera frame counters for the ImGui performance panel, and forces
-// the Plane transparent during shutdown fade-out without mutating XRPlane from
-// the main thread.
+// starts/updates the VST blur+darken mask from the first visible Plane frame,
+// publishes camera counters, and applies shutdown Plane transparency.
 #define createPlane(...) createPlane(__VA_ARGS__); \
     DualIC4Varjo::CalibrationRuntimeBridge::RegisterPlane(plane); \
     DualIC4Varjo::FadeOutPostProcessIntegration::RegisterRuntime( \
@@ -51,13 +56,12 @@
         plane, d3dBackend.frameInfoSnapshot()); \
     DualIC4Varjo::FadeOutPostProcessIntegration::ApplyPlaneFadeVisibility(plane)
 
-// Keep the original Q/R/Esc termination semantics, but move the OpenCV window
-// offscreen and report quality through the console. During calibration,
-// Ctrl+C only sets gStopRequested; pass that flag to the bridge so the blocking
-// calibration loop is also aborted and the normal cleanup path can run.
+// GUI close/Ctrl+C can occur while OpenCV calibration owns the main thread.
+// This wrapper aborts that loop and waits for the VST fade before returning to
+// the caller, which may then set gStopRequested and perform normal cleanup.
 #define RunCheckerboardStereoCalibration(inputQueue, backend, options, initialDocument) \
-    DualIC4Varjo::CalibrationRuntimeBridge::RunHeadlessCheckerboardStereoCalibration( \
-        inputQueue, backend, options, initialDocument, &gStopRequested)
+    DualIC4Varjo::GracefulShutdownIntegration::RunHeadlessCheckerboardStereoCalibration( \
+        inputQueue, backend, options, initialDocument)
 
 #include "ApplicationMainRealtimeCalibration.cpp"
 
@@ -65,6 +69,7 @@
 #undef render
 #undef createPlane
 #undef GetAsyncKeyState
+#undef SetConsoleCtrlHandler
 #undef RenderedFrameMetadataLogger
 #undef StereoDisplayTextureRing
 #undef D3D12FrameSyncThread
