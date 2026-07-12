@@ -50,6 +50,7 @@ struct AppConfig {
     std::size_t displayRingSize = 4;
 
     std::optional<std::filesystem::path> calibrationJson;
+    std::string postProcessMode = "none";
 
     bool pcPreviewEnabled = true;
     int pcPreviewWidth = 1600;
