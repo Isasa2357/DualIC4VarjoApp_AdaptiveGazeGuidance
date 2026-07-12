@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -108,15 +109,18 @@ public:
             shader_.reset();
             return false;
         }
-        if (!shader_->setEnabled(false)) {
-            lastError_ = shader_->lastError();
-            shader_.reset();
-            return false;
-        }
 
+        // Do not call varjo_MRSetShader(false) here. On some Varjo Runtime
+        // versions this returns an opaque "Unknown error" before the video
+        // postprocess path is actively used, even though the shader was locked,
+        // configured, and supplied with constants successfully. A configured
+        // shader is not applied until it is explicitly enabled, so the initial
+        // false transition is unnecessary. Enable it only when Esc starts the
+        // fade-out, after varjo_MRSetVideoRender(true).
         initialized_ = true;
         started_.store(false, std::memory_order_release);
         completed_.store(false, std::memory_order_release);
+        std::cout << "[FADE] VST fade-out shader configured; will enable on Esc\n";
         return true;
     }
 
@@ -131,7 +135,15 @@ public:
         stopWorkerRequested_.store(false, std::memory_order_release);
         completed_.store(false, std::memory_order_release);
 
+        varjo_GetError(session_.get());
         varjo_MRSetVideoRender(session_.get(), varjo_True);
+        const varjo_Error videoRenderError = varjo_GetError(session_.get());
+        if (videoRenderError != varjo_NoError) {
+            lastError_ = std::string("varjo_MRSetVideoRender(true) failed: ") +
+                safeVarjoErrorDesc(videoRenderError);
+            return false;
+        }
+
         FadeConstants constants{};
         constants.fadeAmount = 0.0f;
         if (!shader_->submitConstantBuffer(constants)) {
@@ -145,6 +157,7 @@ public:
 
         started_.store(true, std::memory_order_release);
         worker_ = std::thread([this] { workerMain(); });
+        std::cout << "[FADE] VST fade-out shader enabled\n";
         return true;
     }
 
@@ -162,11 +175,12 @@ public:
             try { worker_.join(); } catch (...) {}
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        if (shader_) {
+        if (shader_ && started_.load(std::memory_order_acquire)) {
             try { shader_->setEnabled(false); } catch (...) {}
         }
         shader_.reset();
         initialized_ = false;
+        started_.store(false, std::memory_order_release);
     }
 
     bool started() const noexcept
@@ -193,6 +207,12 @@ private:
         float padding2 = 0.0f;
     };
     static_assert(sizeof(FadeConstants) == 16, "fade constants must stay 16 bytes");
+
+    static const char* safeVarjoErrorDesc(varjo_Error error) noexcept
+    {
+        const char* description = varjo_GetErrorDesc(error);
+        return description ? description : "unknown Varjo error";
+    }
 
     static const char* hlslSource() noexcept
     {
@@ -309,6 +329,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
                 if (shader_) shader_->submitConstantBuffer(finalConstants);
             }
             completed_.store(true, std::memory_order_release);
+            std::cout << "[FADE] VST fade-out constants reached 1.0\n";
         } catch (const std::exception& exception) {
             std::lock_guard<std::mutex> lock(mutex_);
             lastError_ = exception.what();
