@@ -34,13 +34,23 @@ struct CalibrationProfile {
     CalibrationHomography rightInverse;
 };
 
+enum class StereoPostProcessMode : std::uint32_t {
+    None = 0,
+    Darken = 1,
+    Blur = 2,
+};
+
 struct StereoPostProcessSettings {
-    bool enabled = true;
+    StereoPostProcessMode mode = StereoPostProcessMode::None;
+    bool enabled = false;
     float centerX01 = 0.5f;
     float centerY01 = 0.5f;
     float radiusShortAxis01 = 0.25f;
     float edgeSoftnessShortAxis01 = 0.03f;
     float outsideBrightness = 0.5f;
+    float blurRadiusPixels = 4.0f;
+    float blurSigmaPixels = 2.0f;
+    float blurStrength01 = 1.0f;
 };
 
 struct StereoCalibrationDocument {
@@ -85,7 +95,7 @@ void ApplyCalibrationToPlane(
 void UpdatePlanePostProcessState(
     VarjoXR::XRPlane& plane,
     const StereoPostProcessSettings& settings,
-    float revealAmount01);
+    float dynamicAmount01);
 
 void UpdatePlaneAspectFromCalibration(
     VarjoXR::XRPlane& plane,
