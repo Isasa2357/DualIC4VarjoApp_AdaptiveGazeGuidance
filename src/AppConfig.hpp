@@ -60,6 +60,7 @@ struct AppConfig {
     bool enableD3D12DebugLayer = false;
     double maxRuntimeSeconds = 0.0;
 
+    std::string personalizationName = "DEFAULT";
     std::filesystem::path outputBaseDirectory;
     std::string projectName;
     std::filesystem::path metadataCsv;
