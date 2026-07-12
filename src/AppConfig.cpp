@@ -64,6 +64,28 @@ bool IsSingleFolderName(const std::string& value)
            path != "..";
 }
 
+bool ParsePostProcessMode(
+    const std::string& value,
+    std::string& normalized)
+{
+    if (value == "none" ||
+        value == "off" ||
+        value == "disabled" ||
+        value == "disable") {
+        normalized = "none";
+        return true;
+    }
+    if (value == "darken") {
+        normalized = "darken";
+        return true;
+    }
+    if (value == "blur" || value == "blue") {
+        normalized = "blur";
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 bool ParseArguments(
@@ -281,6 +303,11 @@ bool ParseArguments(
                     config.displayRingSize)) {
                 return invalidValue(option, value);
             }
+        } else if (option == "--postprocess") {
+            if (!ParsePostProcessMode(value, config.postProcessMode)) {
+                error = "--postprocess must be none, darken, blur, or blue";
+                return false;
+            }
         } else if (option == "--pc-preview") {
             if (!ParseBool(value, config.pcPreviewEnabled)) {
                 return invalidValue(option, value);
@@ -424,7 +451,8 @@ void PrintUsage(std::ostream& out)
         "  --placement head|world\n"
         "  --plane-width-m N --plane-height-m N\n"
         "  --plane-x-m N --plane-y-m N --plane-distance-m N\n"
-        "  --display-ring-size N\n\n"
+        "  --display-ring-size N\n"
+        "  --postprocess none|darken|blur   Default: none; blue is accepted as blur alias\n\n"
         "PC ImGui preview:\n"
         "  --pc-preview 0|1                 Default: 1\n"
         "  --pc-preview-width N             Default: 1600\n"
