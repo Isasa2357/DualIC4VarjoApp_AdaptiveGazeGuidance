@@ -13,14 +13,18 @@
 #include <VarjoXR/VarjoXR.hpp>
 
 #include <Windows.h>
+#include <Shellapi.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cwctype>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <string>
 #include <thread>
 
 namespace DualIC4Varjo::CalibrationRuntimeBridge {
@@ -30,14 +34,16 @@ inline VarjoXR::XRPlane* gPlane = nullptr;
 
 struct PlanePostProcessRuntimeConfig {
     StereoPostProcessSettings settings{};
-    float revealOpenSeconds = 0.5f;
-    float revealHoldSeconds = 3.0f;
-    float revealCloseSeconds = 0.5f;
 
-    // The reveal animation expands the clear circle to this radius measured
-    // against the image short axis. 4.0 covers ordinary aspect ratios even if
-    // the center is moved near an edge. Keep this configurable for later UI/key
-    // controls without changing the HLSL interface again.
+    // Total default duration remains 4 seconds:
+    // 1s open + 2s hold + 1s close.
+    float revealOpenSeconds = 1.0f;
+    float revealHoldSeconds = 2.0f;
+    float revealCloseSeconds = 1.0f;
+
+    // Used by the darken mode. The reveal animation expands the clear circle to
+    // this radius measured against the image short axis. 4.0 covers ordinary
+    // aspect ratios even if the center is moved near an edge.
     float revealExpandedRadiusShortAxis01 = 4.0f;
 
     // Default to F23 so an external keypad / remapper can trigger the effect
@@ -45,15 +51,141 @@ struct PlanePostProcessRuntimeConfig {
     int revealVirtualKey = VK_F23;
 };
 
+inline const char* PostProcessModeName(StereoPostProcessMode mode) noexcept
+{
+    switch (mode) {
+    case StereoPostProcessMode::Darken: return "darken";
+    case StereoPostProcessMode::Blur: return "blur";
+    case StereoPostProcessMode::None:
+    default:
+        return "none";
+    }
+}
+
+inline StereoPostProcessSettings MakeDarkenPostProcessSettings() noexcept
+{
+    StereoPostProcessSettings settings{};
+    settings.mode = StereoPostProcessMode::Darken;
+    settings.enabled = true;
+    settings.centerX01 = 0.5f;
+    settings.centerY01 = 0.5f;
+    settings.radiusShortAxis01 = 0.25f;
+    settings.edgeSoftnessShortAxis01 = 0.03f;
+    settings.outsideBrightness = 0.5f;
+    settings.blurRadiusPixels = 4.0f;
+    settings.blurSigmaPixels = 2.0f;
+    settings.blurStrength01 = 1.0f;
+    return settings;
+}
+
+inline StereoPostProcessSettings MakeBlurPostProcessSettings() noexcept
+{
+    StereoPostProcessSettings settings{};
+    settings.mode = StereoPostProcessMode::Blur;
+    settings.enabled = true;
+    settings.centerX01 = 0.5f;
+    settings.centerY01 = 0.5f;
+    settings.radiusShortAxis01 = 0.22f;
+    settings.edgeSoftnessShortAxis01 = 0.015f;
+    settings.outsideBrightness = 1.0f;
+    settings.blurRadiusPixels = 4.0f;
+    settings.blurSigmaPixels = 2.0f;
+    settings.blurStrength01 = 1.0f;
+    return settings;
+}
+
+inline std::wstring Lowercase(std::wstring value)
+{
+    for (wchar_t& ch : value) {
+        ch = static_cast<wchar_t>(std::towlower(ch));
+    }
+    return value;
+}
+
+inline bool ApplyCommandLinePostProcessMode(
+    PlanePostProcessRuntimeConfig& config,
+    const std::wstring& rawValue) noexcept
+{
+    const std::wstring value = Lowercase(rawValue);
+    if (value == L"none" ||
+        value == L"off" ||
+        value == L"disabled" ||
+        value == L"disable") {
+        config.settings = StereoPostProcessSettings{};
+        config.settings.mode = StereoPostProcessMode::None;
+        config.settings.enabled = false;
+        return true;
+    }
+    if (value == L"darken") {
+        config.settings = MakeDarkenPostProcessSettings();
+        return true;
+    }
+    if (value == L"blur" || value == L"blue") {
+        config.settings = MakeBlurPostProcessSettings();
+        return true;
+    }
+    return false;
+}
+
+inline PlanePostProcessRuntimeConfig MakeInitialPostProcessRuntimeConfig()
+{
+    PlanePostProcessRuntimeConfig config;
+    config.settings = StereoPostProcessSettings{};
+    config.settings.mode = StereoPostProcessMode::None;
+    config.settings.enabled = false;
+
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool optionFound = false;
+    bool optionValid = true;
+    if (argv) {
+        for (int index = 1; index < argc; ++index) {
+            const std::wstring option = argv[index] ? argv[index] : L"";
+            if (option == L"--postprocess") {
+                optionFound = true;
+                if (index + 1 < argc) {
+                    optionValid = ApplyCommandLinePostProcessMode(
+                        config,
+                        argv[++index] ? argv[index] : L"");
+                } else {
+                    optionValid = false;
+                }
+            }
+        }
+        LocalFree(argv);
+    }
+
+    if (!optionFound) {
+        std::cout
+            << "[POSTPROCESS] mode=none (use --postprocess darken or --postprocess blur/blue to enable)\n";
+    } else if (!optionValid) {
+        config.settings = StereoPostProcessSettings{};
+        config.settings.mode = StereoPostProcessMode::None;
+        config.settings.enabled = false;
+        std::cout
+            << "[POSTPROCESS] invalid --postprocess value; postprocess disabled\n";
+    } else {
+        std::cout
+            << "[POSTPROCESS] mode="
+            << PostProcessModeName(config.settings.mode)
+            << ", reveal_key=F23, open=" << config.revealOpenSeconds
+            << "s, hold=" << config.revealHoldSeconds
+            << "s, close=" << config.revealCloseSeconds << "s\n";
+    }
+
+    return config;
+}
+
 inline std::mutex& PostProcessConfigMutex() noexcept
 {
     static std::mutex mutex;
     return mutex;
 }
 
-inline PlanePostProcessRuntimeConfig& PostProcessConfigStorage() noexcept
+inline PlanePostProcessRuntimeConfig& PostProcessConfigStorage()
 {
-    static PlanePostProcessRuntimeConfig config;
+    static PlanePostProcessRuntimeConfig config =
+        MakeInitialPostProcessRuntimeConfig();
     return config;
 }
 
@@ -242,17 +374,11 @@ inline bool ConsumeRevealKeyPressed(
         GlobalRevealTriggerCounter().load(std::memory_order_acquire);
     if (currentGlobalTriggerCount != observedGlobalTriggerCount) {
         observedGlobalTriggerCount = currentGlobalTriggerCount;
-
-        // Keep the focused polling edge state in sync so one physical press does
-        // not become both a global-hook event and a polling event on the next
-        // render frame.
         focusedPollingPreviousDown =
             (GetAsyncKeyState(revealVirtualKey) & 0x8000) != 0;
         return true;
     }
 
-    // Fallback path used when the low-level hook cannot be installed. This may
-    // depend on foreground/focus, but keeps the old behavior available.
     return KeyPressedEdge(revealVirtualKey, focusedPollingPreviousDown);
 }
 
@@ -298,6 +424,19 @@ inline StereoPostProcessSettings MakeRadiusRevealSettings(
     return settings;
 }
 
+inline StereoPostProcessSettings MakeBlurRevealSettings(
+    const PlanePostProcessRuntimeConfig& config,
+    float revealAmount01) noexcept
+{
+    StereoPostProcessSettings settings = config.settings;
+    const float reveal = std::clamp(
+        std::isfinite(revealAmount01) ? revealAmount01 : 0.0f,
+        0.0f,
+        1.0f);
+    settings.blurStrength01 = 1.0f - reveal;
+    return settings;
+}
+
 inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
 {
     using Clock = std::chrono::steady_clock;
@@ -308,6 +447,13 @@ inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
     static thread_local Clock::time_point pulseStart{};
 
     const auto config = GetPostProcessRuntimeConfig();
+    if (!config.settings.enabled ||
+        config.settings.mode == StereoPostProcessMode::None) {
+        pulseActive = false;
+        UpdatePlanePostProcessState(plane, config.settings, 0.0f);
+        return;
+    }
+
     const int revealVirtualKey = SanitizeRevealVirtualKey(config.revealVirtualKey);
     if (previousRevealVirtualKey != revealVirtualKey) {
         revealPollingDown = false;
@@ -323,12 +469,12 @@ inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
         pulseActive = true;
         pulseStart = now;
         std::cout
-            << "[POSTPROCESS] reveal radius pulse started by " << revealKeyName << ": "
+            << "[POSTPROCESS] "
+            << PostProcessModeName(config.settings.mode)
+            << " reveal pulse started by " << revealKeyName << ": "
             << "open=" << config.revealOpenSeconds
             << "s, hold=" << config.revealHoldSeconds
-            << "s, close=" << config.revealCloseSeconds
-            << "s, expanded_radius="
-            << config.revealExpandedRadiusShortAxis01 << "\n";
+            << "s, close=" << config.revealCloseSeconds << "s\n";
     } else if (revealPressed && pulseActive) {
         std::cout
             << "[POSTPROCESS] reveal pulse is active; "
@@ -337,9 +483,9 @@ inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
 
     float revealAmount = 0.0f;
     if (pulseActive) {
-        const float openSeconds = PositiveOr(config.revealOpenSeconds, 0.5f);
+        const float openSeconds = PositiveOr(config.revealOpenSeconds, 1.0f);
         const float holdSeconds = std::max(0.0f, config.revealHoldSeconds);
-        const float closeSeconds = PositiveOr(config.revealCloseSeconds, 0.5f);
+        const float closeSeconds = PositiveOr(config.revealCloseSeconds, 1.0f);
         const float elapsedSeconds = std::chrono::duration<float>(
             now - pulseStart).count();
         if (elapsedSeconds < openSeconds) {
@@ -356,13 +502,17 @@ inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
         revealAmount = std::clamp(revealAmount, 0.0f, 1.0f);
     }
 
-    const StereoPostProcessSettings animatedSettings =
-        MakeRadiusRevealSettings(config, revealAmount);
-
-    // revealAmount is consumed by the CPU-side radius animation above. Keep the
-    // shader's brightness-reveal channel at zero so the visual change is the
-    // requested expanding/shrinking boundary circle rather than a brightness fade.
-    UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
+    if (config.settings.mode == StereoPostProcessMode::Darken) {
+        const StereoPostProcessSettings animatedSettings =
+            MakeRadiusRevealSettings(config, revealAmount);
+        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
+    } else if (config.settings.mode == StereoPostProcessMode::Blur) {
+        const StereoPostProcessSettings animatedSettings =
+            MakeBlurRevealSettings(config, revealAmount);
+        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
+    } else {
+        UpdatePlanePostProcessState(plane, config.settings, 0.0f);
+    }
 }
 
 inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
@@ -513,9 +663,17 @@ inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
         << "[CALIB] OpenCV preview disabled\n"
         << "[CALIB] controls: Q=finish, R=clear observations, Esc=abort\n"
         << "[CALIB] move plane: arrows; resize/distance: Shift+arrows\n"
-        << "[CALIB] hide/show Varjo plane: O\n"
-        << "[CALIB] reveal darkened surroundings: "
-        << RevealVirtualKeyName(config.revealVirtualKey) << "\n";
+        << "[CALIB] hide/show Varjo plane: O\n";
+    if (config.settings.enabled &&
+        config.settings.mode != StereoPostProcessMode::None) {
+        std::cout
+            << "[CALIB] reveal "
+            << PostProcessModeName(config.settings.mode)
+            << " postprocess: "
+            << RevealVirtualKeyName(config.revealVirtualKey) << "\n";
+    } else {
+        std::cout << "[CALIB] postprocess disabled\n";
+    }
 
     gCalibrationActive.store(true, std::memory_order_release);
     std::atomic_bool helperThreadStop{false};
