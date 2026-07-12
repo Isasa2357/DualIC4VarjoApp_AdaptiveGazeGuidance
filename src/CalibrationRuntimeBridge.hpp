@@ -143,11 +143,15 @@ inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
     }
 }
 
+inline HWND FindCalibrationWindow() noexcept
+{
+    return FindWindowA(nullptr, "Reference Stereo Calibration (affine_vertical)");
+}
+
 inline void MoveOpenCvWindowOffscreen(std::atomic_bool& stopRequested) noexcept
 {
-    constexpr const char* title = "Reference Stereo Calibration (affine_vertical)";
     while (!stopRequested.load(std::memory_order_acquire)) {
-        if (HWND window = FindWindowA(nullptr, title)) {
+        if (HWND window = FindCalibrationWindow()) {
             LONG_PTR extendedStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
             extendedStyle |= WS_EX_TOOLWINDOW;
             extendedStyle &= ~static_cast<LONG_PTR>(WS_EX_APPWINDOW);
@@ -165,11 +169,54 @@ inline void MoveOpenCvWindowOffscreen(std::atomic_bool& stopRequested) noexcept
     }
 }
 
+inline void InjectEscapeForCalibrationAbort() noexcept
+{
+    if (HWND window = FindCalibrationWindow()) {
+        PostMessageW(window, WM_KEYDOWN, VK_ESCAPE, 0);
+        PostMessageW(window, WM_KEYUP, VK_ESCAPE, 0);
+    }
+
+    INPUT inputs[2]{};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_ESCAPE;
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = VK_ESCAPE;
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, inputs, sizeof(INPUT));
+}
+
+inline void WatchExternalStopForCalibrationAbort(
+    std::atomic_bool& stopRequested,
+    const std::atomic<bool>* externalStopRequested) noexcept
+{
+    if (!externalStopRequested) return;
+
+    bool announced = false;
+    auto lastInjection = std::chrono::steady_clock::now() -
+        std::chrono::seconds(1);
+    while (!stopRequested.load(std::memory_order_acquire)) {
+        if (externalStopRequested->load(std::memory_order_acquire)) {
+            if (!announced) {
+                std::cout
+                    << "[CALIB] external stop requested; aborting calibration\n";
+                announced = true;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastInjection >= std::chrono::milliseconds(100)) {
+                InjectEscapeForCalibrationAbort();
+                lastInjection = now;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
 inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
     IC4Ext::D3D12SyncedFrameQueue& inputQueue,
     const IC4Ext::D3D12BackendContext& backend,
     const CheckerboardCalibrationOptions& options,
-    const std::optional<StereoCalibrationDocument>& initialDocument)
+    const std::optional<StereoCalibrationDocument>& initialDocument,
+    const std::atomic<bool>* externalStopRequested = nullptr)
 {
     std::cout
         << "[CALIB] OpenCV preview disabled\n"
@@ -178,10 +225,20 @@ inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
         << "[CALIB] hide/show Varjo plane: O\n";
 
     gCalibrationActive.store(true, std::memory_order_release);
-    std::atomic_bool windowThreadStop{false};
+    std::atomic_bool helperThreadStop{false};
     std::thread windowThread([&]() noexcept {
-        MoveOpenCvWindowOffscreen(windowThreadStop);
+        MoveOpenCvWindowOffscreen(helperThreadStop);
     });
+    std::thread stopWatcherThread([&]() noexcept {
+        WatchExternalStopForCalibrationAbort(helperThreadStop, externalStopRequested);
+    });
+
+    auto stopHelpers = [&]() noexcept {
+        helperThreadStop.store(true, std::memory_order_release);
+        if (windowThread.joinable()) windowThread.join();
+        if (stopWatcherThread.joinable()) stopWatcherThread.join();
+        gCalibrationActive.store(false, std::memory_order_release);
+    };
 
     CheckerboardCalibrationResult result;
     try {
@@ -191,15 +248,11 @@ inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
             options,
             initialDocument);
     } catch (...) {
-        windowThreadStop.store(true, std::memory_order_release);
-        if (windowThread.joinable()) windowThread.join();
-        gCalibrationActive.store(false, std::memory_order_release);
+        stopHelpers();
         throw;
     }
 
-    windowThreadStop.store(true, std::memory_order_release);
-    if (windowThread.joinable()) windowThread.join();
-    gCalibrationActive.store(false, std::memory_order_release);
+    stopHelpers();
 
     if (result.ok) {
         std::cout
