@@ -83,7 +83,7 @@ inline void SetTrackRange(HWND track, int minValue, int maxValue) noexcept
 inline void SetTrackPos(HWND track, int value) noexcept
 {
     if (!track) return;
-    SendMessageW(track, TBM_SETPOS, TRUE, value);
+    SendMessageW(track, TBM_SETPOS, TRUE, static_cast<LPARAM>(value));
 }
 
 inline int TrackPos(HWND track, int fallback = 0) noexcept
@@ -92,11 +92,21 @@ inline int TrackPos(HWND track, int fallback = 0) noexcept
     return static_cast<int>(SendMessageW(track, TBM_GETPOS, 0, 0));
 }
 
-inline void SetLabel(HWND label, const wchar_t* name, double value, const wchar_t* suffix = L"") noexcept
+inline void SetLabel(
+    HWND label,
+    const wchar_t* name,
+    double value,
+    const wchar_t* suffix = L"") noexcept
 {
     if (!label) return;
     wchar_t text[128]{};
-    std::swprintf(text, std::size(text), L"%s: %.3f%s", name, value, suffix ? suffix : L"");
+    std::swprintf(
+        text,
+        std::size(text),
+        L"%s: %.3f%s",
+        name,
+        value,
+        suffix ? suffix : L"");
     SetWindowTextW(label, text);
 }
 
@@ -116,7 +126,14 @@ inline HWND CreateLabel(HWND parent, int x, int y, int w, const wchar_t* text)
         nullptr);
 }
 
-inline HWND CreateTrack(HWND parent, int id, int x, int y, int w, int minValue, int maxValue)
+inline HWND CreateTrack(
+    HWND parent,
+    int id,
+    int x,
+    int y,
+    int w,
+    int minValue,
+    int maxValue)
 {
     HWND track = CreateWindowW(
         TRACKBAR_CLASSW,
@@ -168,7 +185,9 @@ inline void LoadRuntimeIntoControls() noexcept
     SetTrackPos(c.darkenStrength, static_cast<int>(std::lround((1.0f - std::clamp(s.outsideBrightness, 0.0f, 1.0f)) * 1000.0f)));
     SetTrackPos(c.blurRadius, static_cast<int>(std::lround(std::clamp(s.blurRadiusPixels, 1.0f, 64.0f) * 10.0f)));
     SetTrackPos(c.blurStrength, static_cast<int>(std::lround(std::clamp(s.blurStrength01, 0.0f, 1.0f) * 1000.0f)));
-    SendMessageW(c.debugDot, BM_SETCHECK,
+    SendMessageW(
+        c.debugDot,
+        BM_SETCHECK,
         GuiControlBridge::PostProcessDebugCenterDotVisible() ? BST_CHECKED : BST_UNCHECKED,
         0);
     UpdateLabels();
@@ -328,7 +347,7 @@ inline void ThreadMain() noexcept
         windowClass.lpfnWndProc = &WindowProc;
         windowClass.hInstance = GetModuleHandleW(nullptr);
         windowClass.lpszClassName = className;
-        windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        windowClass.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
         windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         RegisterClassW(&windowClass);
 
