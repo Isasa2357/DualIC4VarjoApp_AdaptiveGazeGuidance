@@ -53,6 +53,7 @@ public:
     std::filesystem::path rightVideoPath() const;
     std::filesystem::path leftMetadataPath() const;
     std::filesystem::path rightMetadataPath() const;
+    std::filesystem::path pairMetadataPath() const;
 
 private:
     struct Impl;
