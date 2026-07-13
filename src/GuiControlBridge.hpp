@@ -37,6 +37,12 @@ inline std::atomic_bool& ApplicationExitRequestedStorage() noexcept
     return value;
 }
 
+inline std::atomic_bool& PostProcessDebugCenterDotVisibleStorage() noexcept
+{
+    static std::atomic_bool value{false};
+    return value;
+}
+
 inline std::atomic<std::uint64_t>& MoveLeftCounter() noexcept
 {
     static std::atomic<std::uint64_t> value{0};
@@ -124,6 +130,16 @@ inline bool ConsumeApplicationExitRequested() noexcept
 inline void RequestApplicationExit() noexcept
 {
     ApplicationExitRequestedStorage().store(true, std::memory_order_release);
+}
+
+inline bool PostProcessDebugCenterDotVisible() noexcept
+{
+    return PostProcessDebugCenterDotVisibleStorage().load(std::memory_order_acquire);
+}
+
+inline void SetPostProcessDebugCenterDotVisible(bool visible) noexcept
+{
+    PostProcessDebugCenterDotVisibleStorage().store(visible, std::memory_order_release);
 }
 
 inline void RequestMoveLeft() noexcept { MoveLeftCounter().fetch_add(1, std::memory_order_acq_rel); }
