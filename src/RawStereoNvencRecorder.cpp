@@ -52,6 +52,23 @@ struct SideRow {
     IC4Ext::FrameChunkMetadata chunk;
 };
 
+struct PairRow {
+    std::uint64_t pairSequence = 0;
+    std::uint64_t encoderFrameIndex = 0;
+    std::uint64_t syncGroupId = 0;
+    std::uint64_t leftFrameNumber = 0;
+    std::uint64_t rightFrameNumber = 0;
+    std::int64_t leftHostReceivedUnixUs = 0;
+    std::int64_t rightHostReceivedUnixUs = 0;
+    std::int64_t pairHostReceivedDiffUs = 0;
+    std::uint64_t leftDeviceTimestampNs = 0;
+    std::uint64_t rightDeviceTimestampNs = 0;
+    std::int64_t pairDeviceTimestampDiffNs = 0;
+    std::int64_t pairSyncTimestampDiffNs = 0;
+    IC4Ext::FrameSyncTimestampSource syncTimestampSource =
+        IC4Ext::FrameSyncTimestampSource::HostReceived;
+};
+
 struct PendingGpuPair {
     IC4Ext::D3D12SyncedFrameSet frameSet;
     D3D12QueueSyncPoint leftConsumed;
@@ -89,6 +106,21 @@ std::uint64_t SyncTimestampNs(
     case IC4Ext::FrameSyncTimestampSource::Auto:
     default:
         return host != 0 ? host : device;
+    }
+}
+
+const char* SyncTimestampSourceName(
+    IC4Ext::FrameSyncTimestampSource source) noexcept
+{
+    switch (source) {
+    case IC4Ext::FrameSyncTimestampSource::HostReceived:
+        return "host";
+    case IC4Ext::FrameSyncTimestampSource::Device:
+        return "device";
+    case IC4Ext::FrameSyncTimestampSource::Auto:
+        return "auto";
+    default:
+        return "unknown";
     }
 }
 
@@ -206,6 +238,35 @@ void WriteRow(std::ofstream& stream, const SideRow& row)
         << '\n';
 }
 
+void WritePairHeader(std::ofstream& stream)
+{
+    stream
+        << "pair_sequence,encoder_frame_index,sync_group_id,"
+        << "left_frame_number,right_frame_number,"
+        << "left_host_received_unix_us,right_host_received_unix_us,pair_host_received_diff_us,"
+        << "left_device_timestamp_ns,right_device_timestamp_ns,pair_device_timestamp_diff_ns,"
+        << "pair_sync_timestamp_diff_ns,sync_timestamp_source\n";
+}
+
+void WritePairRow(std::ofstream& stream, const PairRow& row)
+{
+    stream
+        << row.pairSequence << ','
+        << row.encoderFrameIndex << ','
+        << row.syncGroupId << ','
+        << row.leftFrameNumber << ','
+        << row.rightFrameNumber << ','
+        << row.leftHostReceivedUnixUs << ','
+        << row.rightHostReceivedUnixUs << ','
+        << row.pairHostReceivedDiffUs << ','
+        << row.leftDeviceTimestampNs << ','
+        << row.rightDeviceTimestampNs << ','
+        << row.pairDeviceTimestampDiffNs << ','
+        << row.pairSyncTimestampDiffNs << ','
+        << SyncTimestampSourceName(row.syncTimestampSource)
+        << '\n';
+}
+
 std::wstring QuoteArgument(const std::filesystem::path& path)
 {
     std::wstring value = path.wstring();
@@ -214,7 +275,7 @@ std::wstring QuoteArgument(const std::filesystem::path& path)
         if (character == L'\"') quoted += L'\\';
         quoted += character;
     }
-    quoted += L'\"';
+    quoted += L"\"";
     return quoted;
 }
 
@@ -279,6 +340,7 @@ struct RawStereoNvencRecorder::Impl {
         , rightMp4(config.outputDirectory / (config.baseFilename + "_right_raw.mp4"))
         , leftCsv(config.outputDirectory / (config.baseFilename + "_left_raw_metadata.csv"))
         , rightCsv(config.outputDirectory / (config.baseFilename + "_right_raw_metadata.csv"))
+        , pairCsv(config.outputDirectory / (config.baseFilename + "_raw_pairs.csv"))
     {
     }
 
@@ -289,6 +351,7 @@ struct RawStereoNvencRecorder::Impl {
     std::filesystem::path rightMp4;
     std::filesystem::path leftCsv;
     std::filesystem::path rightCsv;
+    std::filesystem::path pairCsv;
 
     std::thread worker;
     std::atomic<bool> stopRequested{true};
@@ -303,6 +366,7 @@ struct RawStereoNvencRecorder::Impl {
 
     std::ofstream leftMetadata;
     std::ofstream rightMetadata;
+    std::ofstream pairMetadata;
     std::unique_ptr<D3D12Nvenc::D3D12NvencVideoWriter> leftWriter;
     std::unique_ptr<D3D12Nvenc::D3D12NvencVideoWriter> rightWriter;
     std::deque<PendingGpuPair> pendingGpu;
@@ -310,6 +374,16 @@ struct RawStereoNvencRecorder::Impl {
     std::uint64_t rowIndex = 0;
     std::uint32_t fpsNumerator = 160;
     std::uint32_t fpsDenominator = 1;
+
+    std::filesystem::path effectiveLeftVideoPath() const
+    {
+        return config.remuxToMp4 ? leftMp4 : leftH264;
+    }
+
+    std::filesystem::path effectiveRightVideoPath() const
+    {
+        return config.remuxToMp4 ? rightMp4 : rightH264;
+    }
 
     void setException(std::exception_ptr exception) noexcept
     {
@@ -338,11 +412,13 @@ struct RawStereoNvencRecorder::Impl {
 
         leftMetadata.open(leftCsv, std::ios::out | std::ios::trunc);
         rightMetadata.open(rightCsv, std::ios::out | std::ios::trunc);
-        if (!leftMetadata || !rightMetadata) {
+        pairMetadata.open(pairCsv, std::ios::out | std::ios::trunc);
+        if (!leftMetadata || !rightMetadata || !pairMetadata) {
             throw std::runtime_error("failed to open raw-video metadata CSV files");
         }
         WriteHeader(leftMetadata);
         WriteHeader(rightMetadata);
+        WritePairHeader(pairMetadata);
     }
 
     void initializeWriters(const IC4Ext::D3D12CameraFrame& left,
@@ -478,6 +554,9 @@ struct RawStereoNvencRecorder::Impl {
             SyncTimestampNs(right, config.timestampSource));
         const std::int64_t pairHostDiff = SignedDifference(
             HostTimestampNs(left), HostTimestampNs(right)) / 1000;
+        const std::int64_t pairDeviceDiff = SignedDifference(
+            left.timing.deviceTimestampNs,
+            right.timing.deviceTimestampNs);
 
         const auto leftWaitBegin = Clock::now();
         if (left.ready.isValid() && !left.ready.wait()) {
@@ -565,6 +644,21 @@ struct RawStereoNvencRecorder::Impl {
             rightWaitUs,
             encoderIndex,
             rightConsumed);
+        const PairRow pairRow{
+            rowIndex + 1u,
+            encoderIndex,
+            set.syncGroupId,
+            left.timing.frameNumber,
+            right.timing.frameNumber,
+            clockMapper.unixMicroseconds(left.timing.hostReceivedTime),
+            clockMapper.unixMicroseconds(right.timing.hostReceivedTime),
+            pairHostDiff,
+            left.timing.deviceTimestampNs,
+            right.timing.deviceTimestampNs,
+            pairDeviceDiff,
+            pairSyncDiff,
+            config.timestampSource,
+        };
 
         pendingGpu.push_back(PendingGpuPair{
             std::move(set),
@@ -580,7 +674,8 @@ struct RawStereoNvencRecorder::Impl {
 
         WriteRow(leftMetadata, leftRow);
         WriteRow(rightMetadata, rightRow);
-        if (!leftMetadata || !rightMetadata) {
+        WritePairRow(pairMetadata, pairRow);
+        if (!leftMetadata || !rightMetadata || !pairMetadata) {
             throw std::runtime_error("raw-video metadata CSV write failed");
         }
         ++rowIndex;
@@ -588,6 +683,7 @@ struct RawStereoNvencRecorder::Impl {
         if ((rowIndex % 300u) == 0u) {
             leftMetadata.flush();
             rightMetadata.flush();
+            pairMetadata.flush();
         }
     }
 
@@ -605,6 +701,10 @@ struct RawStereoNvencRecorder::Impl {
         if (rightMetadata.is_open()) {
             rightMetadata.flush();
             rightMetadata.close();
+        }
+        if (pairMetadata.is_open()) {
+            pairMetadata.flush();
+            pairMetadata.close();
         }
 
         if (remux && config.remuxToMp4 &&
@@ -662,10 +762,11 @@ bool RawStereoNvencRecorder::start()
     }
     std::cout
         << "[RAW_NVENC] recording worker started\n"
-        << "[RAW_NVENC] left video: " << impl_->leftMp4.string() << '\n'
-        << "[RAW_NVENC] right video: " << impl_->rightMp4.string() << '\n'
+        << "[RAW_NVENC] left video: " << impl_->effectiveLeftVideoPath().string() << '\n'
+        << "[RAW_NVENC] right video: " << impl_->effectiveRightVideoPath().string() << '\n'
         << "[RAW_NVENC] left metadata: " << impl_->leftCsv.string() << '\n'
-        << "[RAW_NVENC] right metadata: " << impl_->rightCsv.string() << '\n';
+        << "[RAW_NVENC] right metadata: " << impl_->rightCsv.string() << '\n'
+        << "[RAW_NVENC] pair metadata: " << impl_->pairCsv.string() << '\n';
     return true;
 }
 
@@ -727,12 +828,12 @@ std::uint64_t RawStereoNvencRecorder::failedPairCount() const noexcept
 
 std::filesystem::path RawStereoNvencRecorder::leftVideoPath() const
 {
-    return impl_ ? impl_->leftMp4 : std::filesystem::path{};
+    return impl_ ? impl_->effectiveLeftVideoPath() : std::filesystem::path{};
 }
 
 std::filesystem::path RawStereoNvencRecorder::rightVideoPath() const
 {
-    return impl_ ? impl_->rightMp4 : std::filesystem::path{};
+    return impl_ ? impl_->effectiveRightVideoPath() : std::filesystem::path{};
 }
 
 std::filesystem::path RawStereoNvencRecorder::leftMetadataPath() const
@@ -743,6 +844,11 @@ std::filesystem::path RawStereoNvencRecorder::leftMetadataPath() const
 std::filesystem::path RawStereoNvencRecorder::rightMetadataPath() const
 {
     return impl_ ? impl_->rightCsv : std::filesystem::path{};
+}
+
+std::filesystem::path RawStereoNvencRecorder::pairMetadataPath() const
+{
+    return impl_ ? impl_->pairCsv : std::filesystem::path{};
 }
 
 } // namespace DualIC4Varjo
