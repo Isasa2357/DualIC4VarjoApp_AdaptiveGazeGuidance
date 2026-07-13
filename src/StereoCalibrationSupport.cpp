@@ -164,18 +164,20 @@ StereoPostProcessSettings SanitizePostProcessSettings(
     }
     settings.centerX01 = std::clamp(FiniteOr(settings.centerX01, 0.5f), 0.0f, 1.0f);
     settings.centerY01 = std::clamp(FiniteOr(settings.centerY01, 0.5f), 0.0f, 1.0f);
+    settings.radiusShortAxis01 = std::clamp(
+        FiniteOr(settings.radiusShortAxis01, 0.2f), 0.0f, 4.0f);
     settings.radiusXShortAxis01 = std::clamp(
-        FiniteOr(settings.radiusXShortAxis01, 0.25f), 0.0f, 4.0f);
+        FiniteOr(settings.radiusXShortAxis01, 0.2f), 0.0f, 4.0f);
     settings.radiusYShortAxis01 = std::clamp(
-        FiniteOr(settings.radiusYShortAxis01, 0.25f), 0.0f, 4.0f);
+        FiniteOr(settings.radiusYShortAxis01, 0.15f), 0.0f, 4.0f);
     settings.edgeSoftnessShortAxis01 = std::clamp(
         FiniteOr(settings.edgeSoftnessShortAxis01, 0.03f), 0.0f, 4.0f);
     settings.outsideBrightness = std::clamp(
-        FiniteOr(settings.outsideBrightness, 0.5f), 0.0f, 1.0f);
+        FiniteOr(settings.outsideBrightness, 0.25f), 0.0f, 1.0f);
     settings.blurRadiusPixels = std::clamp(
-        FiniteOr(settings.blurRadiusPixels, 4.0f), 1.0f, 128.0f);
+        FiniteOr(settings.blurRadiusPixels, 6.0f), 1.0f, 128.0f);
     settings.blurSigmaPixels = std::clamp(
-        FiniteOr(settings.blurSigmaPixels, 2.0f), 0.01f, 128.0f);
+        FiniteOr(settings.blurSigmaPixels, 3.0f), 0.01f, 128.0f);
     settings.blurStrength01 = std::clamp(
         FiniteOr(settings.blurStrength01, 1.0f), 0.0f, 1.0f);
     return settings;
@@ -187,6 +189,16 @@ void ApplyPostProcessConstants(
     float dynamicAmount01) noexcept
 {
     settings = SanitizePostProcessSettings(settings);
+
+    // The F23 reveal path in CalibrationRuntimeBridge expands the legacy circular
+    // radius. When that radius grows beyond the current ellipse radii, expand both
+    // axes as well so temporary disable/reveal still works after the ellipse change.
+    if (settings.radiusShortAxis01 >
+        std::max(settings.radiusXShortAxis01, settings.radiusYShortAxis01)) {
+        settings.radiusXShortAxis01 = settings.radiusShortAxis01;
+        settings.radiusYShortAxis01 = settings.radiusShortAxis01;
+    }
+
     const float dynamicAmount = std::clamp(FiniteOr(dynamicAmount01, 0.0f), 0.0f, 1.0f);
     constants.postprocess0 = {
         settings.centerX01,
