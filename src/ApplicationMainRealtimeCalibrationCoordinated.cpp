@@ -17,7 +17,6 @@
 #include "KeyboardLockIntegration.hpp"
 #include "PersonalizationSettings.hpp"
 #include "PreCalibrationDisplayCalibration.hpp"
-#include "PostProcessControlWindow.hpp"
 #include "PostProcessDefaultOverrides.hpp"
 
 // The included application defines these macros itself. Undefine them here to
@@ -67,7 +66,6 @@
 // Plane transparency.
 #define render() render(); \
     DualIC4Varjo::PostProcessDefaultOverrides::ApplyOnce(); \
-    DualIC4Varjo::PostProcessControlWindow::EnsureStarted(); \
     DualIC4Varjo::PreCalibrationDisplayCalibration::ApplyIfAvailable(plane); \
     DualIC4Varjo::GuiPerformanceStats::SubmitCameraReadFrames( \
         leftCamera.stats().readFrames, rightCamera.stats().readFrames); \
