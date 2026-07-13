@@ -18,28 +18,19 @@ inline void ApplyOnce()
         return;
     }
 
-    config.settings.radiusShortAxis01 = 0.1f;
-    config.settings.radiusXShortAxis01 = 0.1f;
-    config.settings.radiusYShortAxis01 = 0.1f;
-
-    if (config.settings.mode == StereoPostProcessMode::Blur) {
-        // In the current HLSL, blurRadiusPixels is the parameter that directly
-        // controls the visual blur spread. blurStrength01 is already saturated
-        // at 1.0, so doubling the visible blur means doubling this radius.
-        config.settings.blurRadiusPixels = 8.0f;
-        config.settings.blurSigmaPixels = 4.0f;
-        config.settings.blurStrength01 = 1.0f;
-    }
+    config.settings.radiusShortAxis01 = 0.2f;
+    config.settings.radiusXShortAxis01 = 0.2f;
+    config.settings.radiusYShortAxis01 = 0.15f;
+    config.settings.outsideBrightness = 0.25f; // darken strength = 0.75
+    config.settings.blurRadiusPixels = 6.0f;
+    config.settings.blurSigmaPixels = 3.0f;
 
     CalibrationRuntimeBridge::SetPostProcessRuntimeConfig(config);
 
     std::cout
-        << "[POSTPROCESS] defaults overridden: radius_x_short_axis=0.1, radius_y_short_axis=0.1";
-    if (config.settings.mode == StereoPostProcessMode::Blur) {
-        std::cout
-            << ", blur_radius_px=8.0, blur_sigma_px=4.0";
-    }
-    std::cout << '\n';
+        << "[POSTPROCESS] defaults overridden: radius_x_short_axis=0.2, "
+        << "radius_y_short_axis=0.15, darken_strength=0.75, "
+        << "blur_radius_px=6.0\n";
 }
 
 } // namespace DualIC4Varjo::PostProcessDefaultOverrides
