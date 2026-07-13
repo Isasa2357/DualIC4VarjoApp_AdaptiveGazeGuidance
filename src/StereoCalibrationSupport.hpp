@@ -45,7 +45,12 @@ struct StereoPostProcessSettings {
     bool enabled = false;
     float centerX01 = 0.5f;
     float centerY01 = 0.5f;
-    float radiusShortAxis01 = 0.1f;
+
+    // Clear ellipse radii measured against the output image short axis.
+    // X/Y are independent so the non-postprocessed area can be stretched.
+    float radiusXShortAxis01 = 0.1f;
+    float radiusYShortAxis01 = 0.1f;
+
     float edgeSoftnessShortAxis01 = 0.03f;
     float outsideBrightness = 0.5f;
     float blurRadiusPixels = 8.0f;
