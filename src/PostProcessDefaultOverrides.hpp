@@ -19,6 +19,8 @@ inline void ApplyOnce()
     }
 
     config.settings.radiusShortAxis01 = 0.1f;
+    config.settings.radiusXShortAxis01 = 0.1f;
+    config.settings.radiusYShortAxis01 = 0.1f;
 
     if (config.settings.mode == StereoPostProcessMode::Blur) {
         // In the current HLSL, blurRadiusPixels is the parameter that directly
@@ -32,7 +34,7 @@ inline void ApplyOnce()
     CalibrationRuntimeBridge::SetPostProcessRuntimeConfig(config);
 
     std::cout
-        << "[POSTPROCESS] defaults overridden: radius_short_axis=0.1";
+        << "[POSTPROCESS] defaults overridden: radius_x_short_axis=0.1, radius_y_short_axis=0.1";
     if (config.settings.mode == StereoPostProcessMode::Blur) {
         std::cout
             << ", blur_radius_px=8.0, blur_sigma_px=4.0";
