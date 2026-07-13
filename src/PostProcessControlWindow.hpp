@@ -17,7 +17,9 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <iostream>
+#include <iterator>
 #include <thread>
 
 #if defined(_MSC_VER)
