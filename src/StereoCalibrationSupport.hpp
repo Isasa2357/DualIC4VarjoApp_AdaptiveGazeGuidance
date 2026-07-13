@@ -48,17 +48,17 @@ struct StereoPostProcessSettings {
 
     // Legacy circular clear radius. Older integration hooks still write this.
     // The renderer now uses radiusXShortAxis01/radiusYShortAxis01.
-    float radiusShortAxis01 = 0.1f;
+    float radiusShortAxis01 = 0.2f;
 
     // Clear ellipse radii measured against the output image short axis.
     // X/Y are independent so the non-postprocessed area can be stretched.
-    float radiusXShortAxis01 = 0.1f;
-    float radiusYShortAxis01 = 0.1f;
+    float radiusXShortAxis01 = 0.2f;
+    float radiusYShortAxis01 = 0.15f;
 
     float edgeSoftnessShortAxis01 = 0.03f;
-    float outsideBrightness = 0.5f;
-    float blurRadiusPixels = 8.0f;
-    float blurSigmaPixels = 4.0f;
+    float outsideBrightness = 0.25f;
+    float blurRadiusPixels = 6.0f;
+    float blurSigmaPixels = 3.0f;
     float blurStrength01 = 1.0f;
 };
 
