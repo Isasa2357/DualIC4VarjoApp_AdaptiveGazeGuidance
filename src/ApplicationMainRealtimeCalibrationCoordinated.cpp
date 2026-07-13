@@ -15,6 +15,7 @@
 #include "GuiPlaneControlIntegration.hpp"
 #include "KeyboardLockIntegration.hpp"
 #include "PersonalizationSettings.hpp"
+#include "PreCalibrationDisplayCalibration.hpp"
 #include "PostProcessDefaultOverrides.hpp"
 
 // The included application defines these macros itself. Undefine them here to
@@ -55,12 +56,14 @@
         session->shared(), core->GetDirectCommandQueue())
 
 // The render-token replacement applies GUI/keyboard input on the Varjo render
-// thread, synchronizes the VarjoXR black circle Plane for the next rendered
-// frame, starts/updates the VST blur+darken mask from the same Plane projection,
+// thread, applies an existing --calib JSON before the checkerboard prompt/phase,
+// synchronizes the VarjoXR black circle Plane for the next rendered frame,
+// starts/updates the VST blur+darken mask from the same Plane projection,
 // publishes camera counters, captures personalization state, and applies shutdown
 // Plane transparency.
 #define render() render(); \
     DualIC4Varjo::PostProcessDefaultOverrides::ApplyOnce(); \
+    DualIC4Varjo::PreCalibrationDisplayCalibration::ApplyIfAvailable(plane); \
     DualIC4Varjo::GuiPerformanceStats::SubmitCameraReadFrames( \
         leftCamera.stats().readFrames, rightCamera.stats().readFrames); \
     DualIC4Varjo::GuiPlaneControlIntegration::ApplyPlaneInputAfterRender(plane); \
