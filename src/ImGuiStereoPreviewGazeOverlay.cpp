@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
+#include "CalibrationRuntimeBridge.hpp"
 #include "EyeTrackerLoadServiceHook.hpp"
 #include "GazeOnCameraFrameService.hpp"
 #include "GuiControlBridge.hpp"
@@ -81,9 +82,7 @@ std::int64_t ParseI64(const std::string& text)
     if (text.empty() || text == "nan" || text == "nullopt") return 0;
     char* end = nullptr;
     const long long value = std::strtoll(text.c_str(), &end, 10);
-    return (!end || end == text.c_str())
-        ? 0
-        : static_cast<std::int64_t>(value);
+    return (!end || end == text.c_str()) ? 0 : static_cast<std::int64_t>(value);
 }
 
 bool ParseBool01(const std::string& text)
@@ -157,25 +156,14 @@ private:
         headerParsed_ = true;
     }
 
-    std::optional<std::size_t> column(const char* name) const
+    std::string value(const std::vector<std::string>& columns, const char* name) const
     {
         const auto it = header_.find(name);
-        if (it == header_.end()) return std::nullopt;
-        return it->second;
+        if (it == header_.end() || it->second >= columns.size()) return {};
+        return columns[it->second];
     }
 
-    std::string value(
-        const std::vector<std::string>& columns,
-        const char* name) const
-    {
-        const auto index = column(name);
-        if (!index || *index >= columns.size()) return {};
-        return columns[*index];
-    }
-
-    SideSample parseSide(
-        const std::vector<std::string>& columns,
-        const char* prefix) const
+    SideSample parseSide(const std::vector<std::string>& columns, const char* prefix) const
     {
         SideSample side;
         const std::string xName = std::string(prefix) + "_camera_x01";
@@ -332,10 +320,8 @@ public:
         if (now - lastFileScan_ > std::chrono::seconds(1)) {
             lastFileScan_ = now;
             const auto directory = VstLoadServiceHook::outputDirectory();
-            codecLeftCounter_.setPath(
-                FindFileBySuffix(directory, "_left_raw_metadata.csv"));
-            codecRightCounter_.setPath(
-                FindFileBySuffix(directory, "_right_raw_metadata.csv"));
+            codecLeftCounter_.setPath(FindFileBySuffix(directory, "_left_raw_metadata.csv"));
+            codecRightCounter_.setPath(FindFileBySuffix(directory, "_right_raw_metadata.csv"));
         }
         codecLeftCounter_.refresh();
         codecRightCounter_.refresh();
@@ -358,8 +344,7 @@ public:
             return;
         }
 
-        const double elapsed =
-            std::chrono::duration<double>(now - previousTime_).count();
+        const double elapsed = std::chrono::duration<double>(now - previousTime_).count();
         if (elapsed < static_cast<double>(kPerformanceSampleSeconds)) return;
 
         cameraLeft.push(rate(previous_.cameraLeft, current.cameraLeft, elapsed));
@@ -385,14 +370,10 @@ public:
     RateHistory imu;
 
 private:
-    static float rate(
-        std::uint64_t previous,
-        std::uint64_t current,
-        double elapsed) noexcept
+    static float rate(std::uint64_t previous, std::uint64_t current, double elapsed) noexcept
     {
         if (current < previous || elapsed <= 0.0) return 0.0f;
-        return static_cast<float>(
-            static_cast<double>(current - previous) / elapsed);
+        return static_cast<float>(static_cast<double>(current - previous) / elapsed);
     }
 
     LineTailCounter codecLeftCounter_;
@@ -418,12 +399,10 @@ PanelLayout CalculateLayout()
     const ImVec2 workSize = viewport ? viewport->WorkSize : ImVec2(1600.0f, 1020.0f);
 
     PanelLayout layout;
-    const float usableWidth = std::max(
-        640.0f,
-        workSize.x - layout.margin * 2.0f);
-    float rightWidth = std::clamp(usableWidth * 0.36f, 400.0f, 620.0f);
+    const float usableWidth = std::max(640.0f, workSize.x - layout.margin * 2.0f);
+    float rightWidth = std::clamp(usableWidth * 0.48f, 560.0f, 880.0f);
     if (usableWidth - layout.gap - rightWidth < 520.0f) {
-        rightWidth = std::max(320.0f, usableWidth - layout.gap - 520.0f);
+        rightWidth = std::max(360.0f, usableWidth - layout.gap - 520.0f);
     }
     layout.rightWidth = rightWidth;
     layout.leftWidth = std::max(320.0f, usableWidth - layout.gap - rightWidth);
@@ -432,9 +411,7 @@ PanelLayout CalculateLayout()
     float videoHeight = workSize.y - layout.margin * 2.0f - layout.gap - controlsHeight;
     if (videoHeight < 260.0f) {
         videoHeight = 260.0f;
-        controlsHeight = std::max(
-            260.0f,
-            workSize.y - layout.margin * 2.0f - layout.gap - videoHeight);
+        controlsHeight = std::max(260.0f, workSize.y - layout.margin * 2.0f - layout.gap - videoHeight);
     }
     layout.videoHeight = videoHeight;
     layout.controlsHeight = controlsHeight;
@@ -479,30 +456,17 @@ void ApplySpaciousStyleOnce()
     applied = true;
 }
 
-void DrawGazePoint(
-    const SideSample& side,
-    const ImVec2& imageMin,
-    const ImVec2& imageSize)
+void DrawGazePoint(const SideSample& side, const ImVec2& imageMin, const ImVec2& imageSize)
 {
     if (!side.valid) return;
-    const ImVec2 center(
-        imageMin.x + side.x01 * imageSize.x,
-        imageMin.y + side.y01 * imageSize.y);
+    const ImVec2 center(imageMin.x + side.x01 * imageSize.x, imageMin.y + side.y01 * imageSize.y);
     ImDrawList* draw = ImGui::GetWindowDrawList();
     constexpr float radius = 8.0f;
     draw->AddCircleFilled(center, radius + 3.0f, IM_COL32(0, 0, 0, 220), 32);
     draw->AddCircle(center, radius + 3.0f, IM_COL32(255, 255, 255, 255), 32, 2.0f);
     draw->AddCircleFilled(center, radius, IM_COL32(0, 255, 255, 230), 32);
-    draw->AddLine(
-        ImVec2(center.x - 14.0f, center.y),
-        ImVec2(center.x + 14.0f, center.y),
-        IM_COL32(255, 255, 255, 255),
-        2.0f);
-    draw->AddLine(
-        ImVec2(center.x, center.y - 14.0f),
-        ImVec2(center.x, center.y + 14.0f),
-        IM_COL32(255, 255, 255, 255),
-        2.0f);
+    draw->AddLine(ImVec2(center.x - 14.0f, center.y), ImVec2(center.x + 14.0f, center.y), IM_COL32(255, 255, 255, 255), 2.0f);
+    draw->AddLine(ImVec2(center.x, center.y - 14.0f), ImVec2(center.x, center.y + 14.0f), IM_COL32(255, 255, 255, 255), 2.0f);
 }
 
 void RequestApplicationExitFromGui()
@@ -510,9 +474,7 @@ void RequestApplicationExitFromGui()
     GuiControlBridge::RequestApplicationExit();
 }
 
-float MaxHistoryValue(
-    const std::deque<float>& first,
-    const std::deque<float>* second)
+float MaxHistoryValue(const std::deque<float>& first, const std::deque<float>* second)
 {
     float value = 1.0f;
     for (float item : first) value = std::max(value, item);
@@ -522,20 +484,13 @@ float MaxHistoryValue(
     return value;
 }
 
-void DrawOneLine(
-    ImDrawList* draw,
-    const ImVec2& minimum,
-    const ImVec2& size,
-    const std::deque<float>& values,
-    float maximum,
-    ImU32 color)
+void DrawOneLine(ImDrawList* draw, const ImVec2& minimum, const ImVec2& size, const std::deque<float>& values, float maximum, ImU32 color)
 {
     if (!draw || values.size() < 2 || maximum <= 0.0f) return;
     const std::size_t count = values.size();
     ImVec2 previous{};
     for (std::size_t index = 0; index < count; ++index) {
-        const float x = minimum.x + size.x *
-            (static_cast<float>(index) / static_cast<float>(count - 1));
+        const float x = minimum.x + size.x * (static_cast<float>(index) / static_cast<float>(count - 1));
         const float normalized = std::clamp(values[index] / maximum, 0.0f, 1.0f);
         const float y = minimum.y + size.y * (1.0f - normalized);
         const ImVec2 current(x, y);
@@ -544,17 +499,9 @@ void DrawOneLine(
     }
 }
 
-void DrawRateGraph(
-    const char* title,
-    const RateHistory& left,
-    const char* leftLabel,
-    const RateHistory* right,
-    const char* rightLabel,
-    float graphHeight)
+void DrawRateGraph(const char* title, const RateHistory& left, const char* leftLabel, const RateHistory* right, const char* rightLabel, float graphHeight)
 {
     ImGui::TextUnformatted(title);
-    ImGui::Spacing();
-
     const ImVec2 graphMin = ImGui::GetCursorScreenPos();
     const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
     const ImVec2 graphSize(width, graphHeight);
@@ -564,47 +511,24 @@ void DrawRateGraph(
     const ImU32 leftColor = IM_COL32(80, 180, 255, 255);
     const ImU32 rightColor = IM_COL32(255, 190, 80, 255);
 
-    draw->AddRectFilled(
-        graphMin,
-        ImVec2(graphMin.x + graphSize.x, graphMin.y + graphSize.y),
-        IM_COL32(12, 12, 12, 180));
+    draw->AddRectFilled(graphMin, ImVec2(graphMin.x + graphSize.x, graphMin.y + graphSize.y), IM_COL32(12, 12, 12, 180));
     for (int line = 1; line < 4; ++line) {
         const float y = graphMin.y + graphSize.y * (static_cast<float>(line) / 4.0f);
-        draw->AddLine(
-            ImVec2(graphMin.x, y),
-            ImVec2(graphMin.x + graphSize.x, y),
-            grid,
-            1.0f);
+        draw->AddLine(ImVec2(graphMin.x, y), ImVec2(graphMin.x + graphSize.x, y), grid, 1.0f);
     }
-    draw->AddRect(
-        graphMin,
-        ImVec2(graphMin.x + graphSize.x, graphMin.y + graphSize.y),
-        border);
+    draw->AddRect(graphMin, ImVec2(graphMin.x + graphSize.x, graphMin.y + graphSize.y), border);
 
-    const float maximum = MaxHistoryValue(
-        left.values(),
-        right ? &right->values() : nullptr);
+    const float maximum = MaxHistoryValue(left.values(), right ? &right->values() : nullptr);
     DrawOneLine(draw, graphMin, graphSize, left.values(), maximum, leftColor);
-    if (right) {
-        DrawOneLine(draw, graphMin, graphSize, right->values(), maximum, rightColor);
-    }
+    if (right) DrawOneLine(draw, graphMin, graphSize, right->values(), maximum, rightColor);
     ImGui::Dummy(graphSize);
 
-    ImGui::TextColored(
-        ImVec4(0.31f, 0.71f, 1.0f, 1.0f),
-        "%s %.1f%s",
-        leftLabel,
-        left.latest(),
-        right ? " fps" : " /s");
+    ImGui::TextColored(ImVec4(0.31f, 0.71f, 1.0f, 1.0f), "%s %.1f%s", leftLabel, left.latest(), right ? " fps" : " /s");
     if (right) {
-        ImGui::SameLine(0.0f, 24.0f);
-        ImGui::TextColored(
-            ImVec4(1.0f, 0.75f, 0.31f, 1.0f),
-            "%s %.1f fps",
-            rightLabel,
-            right->latest());
+        ImGui::SameLine(0.0f, 20.0f);
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.31f, 1.0f), "%s %.1f fps", rightLabel, right->latest());
     }
-    ImGui::SameLine(0.0f, 24.0f);
+    ImGui::SameLine(0.0f, 20.0f);
     ImGui::TextDisabled("scale %.1f", maximum);
     ImGui::Spacing();
     ImGui::Separator();
@@ -652,31 +576,92 @@ void DrawControlPanel()
     ImGui::Spacing();
 
     bool showPlane = GuiControlBridge::PlaneVisible();
-    if (ImGui::Checkbox("Show Plane", &showPlane)) {
-        GuiControlBridge::RequestTogglePlaneVisibility();
-    }
+    if (ImGui::Checkbox("Show Plane", &showPlane)) GuiControlBridge::RequestTogglePlaneVisibility();
     ImGui::SameLine(0.0f, 32.0f);
     bool locked = GuiControlBridge::KeyboardControlLocked();
-    if (ImGui::Checkbox("Keyboard operation lock", &locked)) {
-        GuiControlBridge::SetKeyboardControlLocked(locked);
-    }
+    if (ImGui::Checkbox("Keyboard operation lock", &locked)) GuiControlBridge::SetKeyboardControlLocked(locked);
 
     ImGui::Spacing();
-    ImGui::TextDisabled(
-        "Plane hidden: VST pass-through. Keyboard lock keeps only the postprocess reveal key active.");
+    ImGui::TextDisabled("Plane hidden: VST pass-through. Keyboard lock keeps only the postprocess reveal key active.");
 
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(150, 45, 45, 255));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(185, 60, 60, 255));
-    if (ImGui::Button("Exit application", ImVec2(190.0f, 42.0f))) {
-        RequestApplicationExitFromGui();
-    }
+    if (ImGui::Button("Exit application", ImVec2(190.0f, 42.0f))) RequestApplicationExitFromGui();
     ImGui::PopStyleColor(2);
+}
+
+void DrawPerformanceGraphs(float graphHeight)
+{
+    auto& performance = Performance();
+    DrawRateGraph("Camera FPS", performance.cameraLeft, "Left", &performance.cameraRight, "Right", graphHeight);
+    DrawRateGraph("Video codec FPS", performance.codecLeft, "Left", &performance.codecRight, "Right", graphHeight);
+    DrawRateGraph("VST acquisition", performance.vstLeft, "Left", &performance.vstRight, "Right", graphHeight);
+    DrawRateGraph("Eye tracker acquisition", performance.eye, "Samples", nullptr, nullptr, graphHeight);
+    DrawRateGraph("IMU acquisition", performance.imu, "Samples", nullptr, nullptr, graphHeight);
+}
+
+void DrawPostProcessPanel()
+{
+    auto config = CalibrationRuntimeBridge::GetPostProcessRuntimeConfig();
+    auto settings = config.settings;
+    bool changed = false;
+
+    ImGui::TextUnformatted("Postprocess");
+    ImGui::SameLine(0.0f, 14.0f);
+    ImGui::TextDisabled("mode from --postprocess: %s", CalibrationRuntimeBridge::PostProcessModeName(settings.mode));
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    bool apply = settings.enabled && settings.mode != StereoPostProcessMode::None;
+    if (ImGui::Checkbox("Apply command-line postprocess", &apply)) {
+        settings.enabled = apply && settings.mode != StereoPostProcessMode::None;
+        changed = true;
+    }
+
+    bool debugDot = GuiControlBridge::PostProcessDebugCenterDotVisible();
+    if (ImGui::Checkbox("Show center debug dot", &debugDot)) {
+        GuiControlBridge::SetPostProcessDebugCenterDotVisible(debugDot);
+    }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Clear ellipse center");
+    changed |= ImGui::SliderFloat("Center X", &settings.centerX01, 0.0f, 1.0f, "%.3f");
+    changed |= ImGui::SliderFloat("Center Y", &settings.centerY01, 0.0f, 1.0f, "%.3f");
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Clear ellipse radii / short axis");
+    changed |= ImGui::SliderFloat("Radius X", &settings.radiusXShortAxis01, 0.0f, 1.5f, "%.3f");
+    changed |= ImGui::SliderFloat("Radius Y", &settings.radiusYShortAxis01, 0.0f, 1.5f, "%.3f");
+    changed |= ImGui::SliderFloat("Edge softness", &settings.edgeSoftnessShortAxis01, 0.0f, 0.3f, "%.3f");
+
+    ImGui::Spacing();
+    float darkenStrength = 1.0f - std::clamp(settings.outsideBrightness, 0.0f, 1.0f);
+    if (ImGui::SliderFloat("Darken strength", &darkenStrength, 0.0f, 1.0f, "%.3f")) {
+        settings.outsideBrightness = 1.0f - darkenStrength;
+        changed = true;
+    }
+    changed |= ImGui::SliderFloat("Blur radius px", &settings.blurRadiusPixels, 1.0f, 64.0f, "%.1f");
+    changed |= ImGui::SliderFloat("Blur strength", &settings.blurStrength01, 0.0f, 1.0f, "%.3f");
+
+    if (changed) {
+        settings.centerX01 = std::clamp(settings.centerX01, 0.0f, 1.0f);
+        settings.centerY01 = std::clamp(settings.centerY01, 0.0f, 1.0f);
+        settings.radiusXShortAxis01 = std::clamp(settings.radiusXShortAxis01, 0.0f, 1.5f);
+        settings.radiusYShortAxis01 = std::clamp(settings.radiusYShortAxis01, 0.0f, 1.5f);
+        settings.radiusShortAxis01 = 0.5f * (settings.radiusXShortAxis01 + settings.radiusYShortAxis01);
+        settings.edgeSoftnessShortAxis01 = std::clamp(settings.edgeSoftnessShortAxis01, 0.0f, 0.3f);
+        settings.outsideBrightness = std::clamp(settings.outsideBrightness, 0.0f, 1.0f);
+        settings.blurRadiusPixels = std::clamp(settings.blurRadiusPixels, 1.0f, 64.0f);
+        settings.blurSigmaPixels = std::max(0.01f, settings.blurRadiusPixels * 0.5f);
+        settings.blurStrength01 = std::clamp(settings.blurStrength01, 0.0f, 1.0f);
+        config.settings = settings;
+        CalibrationRuntimeBridge::SetPostProcessRuntimeConfig(config);
+    }
 }
 
 void DrawPerformancePanel()
 {
-    auto& performance = Performance();
     ImGui::TextUnformatted("Live rates");
     ImGui::SameLine(0.0f, 16.0f);
     ImGui::TextDisabled("0.5 s sampling / last about 20 s");
@@ -684,47 +669,18 @@ void DrawPerformancePanel()
     ImGui::Spacing();
 
     const float availableHeight = std::max(360.0f, ImGui::GetContentRegionAvail().y);
-    const float graphHeight = std::clamp(
-        availableHeight / 5.0f - 54.0f,
-        72.0f,
-        108.0f);
+    const float graphHeight = std::clamp(availableHeight / 5.0f - 54.0f, 72.0f, 108.0f);
+    const float availableWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float postWidth = std::clamp(availableWidth * 0.42f, 300.0f, 420.0f);
+    const float perfWidth = std::max(260.0f, availableWidth - postWidth - 12.0f);
 
-    ImGui::BeginChild("PerformanceGraphs", ImVec2(0.0f, 0.0f), false);
-    DrawRateGraph(
-        "Camera FPS",
-        performance.cameraLeft,
-        "Left",
-        &performance.cameraRight,
-        "Right",
-        graphHeight);
-    DrawRateGraph(
-        "Video codec FPS",
-        performance.codecLeft,
-        "Left",
-        &performance.codecRight,
-        "Right",
-        graphHeight);
-    DrawRateGraph(
-        "VST acquisition",
-        performance.vstLeft,
-        "Left",
-        &performance.vstRight,
-        "Right",
-        graphHeight);
-    DrawRateGraph(
-        "Eye tracker acquisition",
-        performance.eye,
-        "Samples",
-        nullptr,
-        nullptr,
-        graphHeight);
-    DrawRateGraph(
-        "IMU acquisition",
-        performance.imu,
-        "Samples",
-        nullptr,
-        nullptr,
-        graphHeight);
+    ImGui::BeginChild("PerformanceGraphs", ImVec2(perfWidth, 0.0f), false);
+    DrawPerformanceGraphs(graphHeight);
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("PostprocessControls", ImVec2(0.0f, 0.0f), true);
+    DrawPostProcessPanel();
     ImGui::EndChild();
 }
 
@@ -742,27 +698,17 @@ void DrawGuiPanels()
         ImGuiWindowFlags_NoCollapse;
 
     ImGui::SetNextWindowPos(
-        ImVec2(
-            workPos.x + layout.margin,
-            workPos.y + layout.margin + layout.videoHeight + layout.gap),
+        ImVec2(workPos.x + layout.margin, workPos.y + layout.margin + layout.videoHeight + layout.gap),
         ImGuiCond_Always);
-    ImGui::SetNextWindowSize(
-        ImVec2(layout.leftWidth, layout.controlsHeight),
-        ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(layout.leftWidth, layout.controlsHeight), ImGuiCond_Always);
     ImGui::Begin("Controls", nullptr, panelFlags);
     DrawControlPanel();
     ImGui::End();
 
     ImGui::SetNextWindowPos(
-        ImVec2(
-            workPos.x + layout.margin + layout.leftWidth + layout.gap,
-            workPos.y + layout.margin),
+        ImVec2(workPos.x + layout.margin + layout.leftWidth + layout.gap, workPos.y + layout.margin),
         ImGuiCond_Always);
-    ImGui::SetNextWindowSize(
-        ImVec2(
-            layout.rightWidth,
-            layout.videoHeight + layout.gap + layout.controlsHeight),
-        ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(layout.rightWidth, layout.videoHeight + layout.gap + layout.controlsHeight), ImGuiCond_Always);
     ImGui::Begin("Performance", nullptr, panelFlags);
     DrawPerformancePanel();
     ImGui::End();
@@ -778,9 +724,7 @@ void BeginFrame()
     Performance().update();
 }
 
-void DrawImageWithLatestGaze(
-    ImTextureRef texture,
-    const ImVec2& imageSize)
+void DrawImageWithLatestGaze(ImTextureRef texture, const ImVec2& imageSize)
 {
     const ImVec2 imageMin = ImGui::GetCursorScreenPos();
     ImGui::Image(texture, imageSize);
@@ -793,10 +737,7 @@ void DrawImageWithLatestGaze(
 
     const int sideIndex = ImageSideIndex();
     ImageSideIndex() = (ImageSideIndex() + 1) % 2;
-    DrawGazePoint(
-        sideIndex == 0 ? latest->left : latest->right,
-        imageMin,
-        imageSize);
+    DrawGazePoint(sideIndex == 0 ? latest->left : latest->right, imageMin, imageSize);
 }
 
 ImVec2 PreviewContentRegionAvail()
@@ -835,10 +776,6 @@ HWND WINAPI GazeOverlayCreateWindowW(
     HINSTANCE instance,
     LPVOID parameter)
 {
-    // The integrated preview now contains video, controls, and performance plots.
-    // Keep the user-specified width but enforce a taller parent window so the
-    // Controls panel is visible without immediate scrolling at the old 1600x800
-    // default.
     const int tallerHeight = std::max(height, 1080);
     return ::CreateWindowW(
         className,
@@ -864,13 +801,9 @@ void GazeOverlayNewFrame()
     ImGui::NewFrame();
 }
 
-void GazeOverlayImage(
-    ImTextureRef texture,
-    const ImVec2& imageSize)
+void GazeOverlayImage(ImTextureRef texture, const ImVec2& imageSize)
 {
-    DualIC4Varjo::ImGuiGazeOverlay::DrawImageWithLatestGaze(
-        texture,
-        imageSize);
+    DualIC4Varjo::ImGuiGazeOverlay::DrawImageWithLatestGaze(texture, imageSize);
 }
 
 ImVec2 GazeOverlayGetContentRegionAvail()
