@@ -15,8 +15,9 @@ class VstLoadServiceHook {
 public:
     static void configure(int argc, char** argv);
 
-    // Starts VST once on a separate initialization thread. Repeated calls from
-    // the render loop are constant-time after the first request.
+    // VST recording is intentionally disabled. This compatibility hook is kept
+    // so the realtime application can call it without creating VarjoVSTService,
+    // ffmpeg pipes, VST videos, or VST metadata CSV files.
     static void ensureStarted(
         const std::shared_ptr<varjo_Session>& session) noexcept;
 
