@@ -24,6 +24,8 @@
 namespace DualIC4Varjo::GuiPlaneControlIntegration {
 namespace detail {
 
+inline constexpr float kGuiPostProcessTransitionSeconds = 0.5f;
+
 inline void ApplyVisibleState(VarjoXR::XRPlane& plane, bool visible)
 {
     // VST pass-through is now selected explicitly by
@@ -113,19 +115,48 @@ inline void PrintPlaneState(
               << '\n';
 }
 
-inline void ApplyPostProcessWithActivationTransition(VarjoXR::XRPlane& plane)
+inline void ApplyAnimatedPostProcessSettings(
+    VarjoXR::XRPlane& plane,
+    const CalibrationRuntimeBridge::PlanePostProcessRuntimeConfig& config,
+    float revealAmount01)
+{
+    const float revealAmount = std::clamp(
+        std::isfinite(revealAmount01) ? revealAmount01 : 0.0f,
+        0.0f,
+        1.0f);
+
+    if (config.settings.mode == StereoPostProcessMode::Darken) {
+        const StereoPostProcessSettings animatedSettings =
+            CalibrationRuntimeBridge::MakeRadiusRevealSettings(
+                config,
+                revealAmount);
+        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
+    } else if (config.settings.mode == StereoPostProcessMode::Blur) {
+        const StereoPostProcessSettings animatedSettings =
+            CalibrationRuntimeBridge::MakeBlurRevealSettings(
+                config,
+                revealAmount);
+        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
+    }
+}
+
+inline void ApplyPostProcessWithGuiTransition(VarjoXR::XRPlane& plane)
 {
     using Clock = std::chrono::steady_clock;
 
-    // Keep the existing keyboard reveal path active. We may override only the
-    // enable transition below so checking the ImGui box fades back in instead of
-    // snapping to the full postprocess immediately.
+    // Keep the existing keyboard reveal path active. GUI check/uncheck only
+    // overrides the normal postprocess state while its 0.5 s transition is
+    // running.
     CalibrationRuntimeBridge::ApplyPlanePostProcessFromKeyboard(plane);
 
     static thread_local bool previousDesiredApply = false;
-    static thread_local bool activationActive = false;
-    static thread_local Clock::time_point activationStart{};
-    static thread_local StereoPostProcessMode activationMode = StereoPostProcessMode::None;
+    static thread_local bool transitionActive = false;
+    static thread_local bool transitionToApply = false;
+    static thread_local Clock::time_point transitionStart{};
+    static thread_local StereoPostProcessMode transitionMode = StereoPostProcessMode::None;
+    static thread_local bool haveLastActiveConfig = false;
+    static thread_local CalibrationRuntimeBridge::PlanePostProcessRuntimeConfig transitionConfig{};
+    static thread_local CalibrationRuntimeBridge::PlanePostProcessRuntimeConfig lastActiveConfig{};
 
     const auto config = CalibrationRuntimeBridge::GetPostProcessRuntimeConfig();
     const bool desiredApply =
@@ -133,55 +164,64 @@ inline void ApplyPostProcessWithActivationTransition(VarjoXR::XRPlane& plane)
         config.settings.mode != StereoPostProcessMode::None;
     const auto now = Clock::now();
 
-    if (!desiredApply) {
-        previousDesiredApply = false;
-        activationActive = false;
-        activationMode = StereoPostProcessMode::None;
+    if (desiredApply) {
+        lastActiveConfig = config;
+        haveLastActiveConfig = true;
+    }
+
+    if (desiredApply != previousDesiredApply) {
+        transitionActive = true;
+        transitionToApply = desiredApply;
+        transitionStart = now;
+        transitionMode = desiredApply
+            ? config.settings.mode
+            : (haveLastActiveConfig
+                ? lastActiveConfig.settings.mode
+                : config.settings.mode);
+        transitionConfig = desiredApply ? config : lastActiveConfig;
+        if (transitionConfig.settings.mode != StereoPostProcessMode::None) {
+            transitionConfig.settings.enabled = true;
+        }
+
+        std::cout
+            << "[POSTPROCESS] "
+            << (desiredApply ? "apply" : "remove")
+            << " transition started from GUI checkbox; duration="
+            << kGuiPostProcessTransitionSeconds << "s\n";
+    }
+    previousDesiredApply = desiredApply;
+
+    if (!transitionActive ||
+        transitionConfig.settings.mode == StereoPostProcessMode::None) {
         return;
     }
 
-    if (!previousDesiredApply) {
-        activationActive = true;
-        activationStart = now;
-        activationMode = config.settings.mode;
-        std::cout
-            << "[POSTPROCESS] "
-            << CalibrationRuntimeBridge::PostProcessModeName(config.settings.mode)
-            << " apply transition started from GUI checkbox; close="
-            << config.revealCloseSeconds << "s\n";
-    }
-    previousDesiredApply = true;
-
-    if (!activationActive) return;
-    if (activationMode != config.settings.mode) {
-        activationStart = now;
-        activationMode = config.settings.mode;
+    if (transitionMode != transitionConfig.settings.mode) {
+        transitionStart = now;
+        transitionMode = transitionConfig.settings.mode;
     }
 
-    const float closeSeconds = CalibrationRuntimeBridge::PositiveOr(
-        config.revealCloseSeconds,
-        1.0f);
     const float elapsedSeconds = std::chrono::duration<float>(
-        now - activationStart).count();
-    const float revealAmount = std::clamp(
-        1.0f - elapsedSeconds / closeSeconds,
+        now - transitionStart).count();
+    const float t = std::clamp(
+        elapsedSeconds / kGuiPostProcessTransitionSeconds,
         0.0f,
         1.0f);
 
-    if (revealAmount <= 0.0f) {
-        activationActive = false;
+    if (t >= 1.0f) {
+        transitionActive = false;
+        if (!transitionToApply) {
+            StereoPostProcessSettings disabledSettings = transitionConfig.settings;
+            disabledSettings.enabled = false;
+            UpdatePlanePostProcessState(plane, disabledSettings, 0.0f);
+        }
         return;
     }
 
-    if (config.settings.mode == StereoPostProcessMode::Darken) {
-        const StereoPostProcessSettings animatedSettings =
-            CalibrationRuntimeBridge::MakeRadiusRevealSettings(config, revealAmount);
-        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
-    } else if (config.settings.mode == StereoPostProcessMode::Blur) {
-        const StereoPostProcessSettings animatedSettings =
-            CalibrationRuntimeBridge::MakeBlurRevealSettings(config, revealAmount);
-        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
-    }
+    // revealAmount == 1 means postprocess is effectively removed; revealAmount
+    // == 0 means the selected command-line postprocess is fully applied.
+    const float revealAmount = transitionToApply ? (1.0f - t) : t;
+    ApplyAnimatedPostProcessSettings(plane, transitionConfig, revealAmount);
 }
 
 } // namespace detail
@@ -189,9 +229,9 @@ inline void ApplyPostProcessWithActivationTransition(VarjoXR::XRPlane& plane)
 inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
 {
     // Postprocess reveal remains keyboard-triggerable while ordinary keyboard
-    // Plane operations are locked. GUI enabling of postprocess uses the same
-    // smooth return motion as the temporary reveal/disable key.
-    detail::ApplyPostProcessWithActivationTransition(plane);
+    // Plane operations are locked. GUI check/uncheck uses a fixed 0.5 s
+    // transition in both directions.
+    detail::ApplyPostProcessWithGuiTransition(plane);
 
     const auto commands = GuiControlBridge::ConsumePlaneCommands();
     bool changed = false;
