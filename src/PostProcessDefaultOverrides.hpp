@@ -13,8 +13,7 @@ inline void ApplyOnce()
     applied = true;
 
     auto config = CalibrationRuntimeBridge::GetPostProcessRuntimeConfig();
-    if (!config.settings.enabled ||
-        config.settings.mode == StereoPostProcessMode::None) {
+    if (config.settings.mode == StereoPostProcessMode::None) {
         return;
     }
 
@@ -25,12 +24,17 @@ inline void ApplyOnce()
     config.settings.blurRadiusPixels = 6.0f;
     config.settings.blurSigmaPixels = 3.0f;
 
+    // The command line selects which postprocess mode is available, but the GUI
+    // checkbox controls whether it is applied. Start with it unchecked so the
+    // first visible state is the unprocessed image.
+    config.settings.enabled = false;
+
     CalibrationRuntimeBridge::SetPostProcessRuntimeConfig(config);
 
     std::cout
         << "[POSTPROCESS] defaults overridden: radius_x_short_axis=0.2, "
         << "radius_y_short_axis=0.15, darken_strength=0.75, "
-        << "blur_radius_px=6.0\n";
+        << "blur_radius_px=6.0, apply_at_start=0\n";
 }
 
 } // namespace DualIC4Varjo::PostProcessDefaultOverrides
