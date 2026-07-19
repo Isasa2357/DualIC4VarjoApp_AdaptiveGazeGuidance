@@ -15,6 +15,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
@@ -112,13 +113,85 @@ inline void PrintPlaneState(
               << '\n';
 }
 
+inline void ApplyPostProcessWithActivationTransition(VarjoXR::XRPlane& plane)
+{
+    using Clock = std::chrono::steady_clock;
+
+    // Keep the existing keyboard reveal path active. We may override only the
+    // enable transition below so checking the ImGui box fades back in instead of
+    // snapping to the full postprocess immediately.
+    CalibrationRuntimeBridge::ApplyPlanePostProcessFromKeyboard(plane);
+
+    static thread_local bool previousDesiredApply = false;
+    static thread_local bool activationActive = false;
+    static thread_local Clock::time_point activationStart{};
+    static thread_local StereoPostProcessMode activationMode = StereoPostProcessMode::None;
+
+    const auto config = CalibrationRuntimeBridge::GetPostProcessRuntimeConfig();
+    const bool desiredApply =
+        config.settings.enabled &&
+        config.settings.mode != StereoPostProcessMode::None;
+    const auto now = Clock::now();
+
+    if (!desiredApply) {
+        previousDesiredApply = false;
+        activationActive = false;
+        activationMode = StereoPostProcessMode::None;
+        return;
+    }
+
+    if (!previousDesiredApply) {
+        activationActive = true;
+        activationStart = now;
+        activationMode = config.settings.mode;
+        std::cout
+            << "[POSTPROCESS] "
+            << CalibrationRuntimeBridge::PostProcessModeName(config.settings.mode)
+            << " apply transition started from GUI checkbox; close="
+            << config.revealCloseSeconds << "s\n";
+    }
+    previousDesiredApply = true;
+
+    if (!activationActive) return;
+    if (activationMode != config.settings.mode) {
+        activationStart = now;
+        activationMode = config.settings.mode;
+    }
+
+    const float closeSeconds = CalibrationRuntimeBridge::PositiveOr(
+        config.revealCloseSeconds,
+        1.0f);
+    const float elapsedSeconds = std::chrono::duration<float>(
+        now - activationStart).count();
+    const float revealAmount = std::clamp(
+        1.0f - elapsedSeconds / closeSeconds,
+        0.0f,
+        1.0f);
+
+    if (revealAmount <= 0.0f) {
+        activationActive = false;
+        return;
+    }
+
+    if (config.settings.mode == StereoPostProcessMode::Darken) {
+        const StereoPostProcessSettings animatedSettings =
+            CalibrationRuntimeBridge::MakeRadiusRevealSettings(config, revealAmount);
+        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
+    } else if (config.settings.mode == StereoPostProcessMode::Blur) {
+        const StereoPostProcessSettings animatedSettings =
+            CalibrationRuntimeBridge::MakeBlurRevealSettings(config, revealAmount);
+        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
+    }
+}
+
 } // namespace detail
 
 inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
 {
     // Postprocess reveal remains keyboard-triggerable while ordinary keyboard
-    // Plane operations are locked.
-    CalibrationRuntimeBridge::ApplyPlanePostProcessFromKeyboard(plane);
+    // Plane operations are locked. GUI enabling of postprocess uses the same
+    // smooth return motion as the temporary reveal/disable key.
+    detail::ApplyPostProcessWithActivationTransition(plane);
 
     const auto commands = GuiControlBridge::ConsumePlaneCommands();
     bool changed = false;
