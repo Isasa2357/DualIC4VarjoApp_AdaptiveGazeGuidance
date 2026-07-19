@@ -4,14 +4,13 @@
 #include "RawStereoNvencRecorder.hpp"
 #include "TimeUtil.hpp"
 
-#include <D3D12NvencVideoWriter/D3D12NvencVideoWriter.hpp>
+#include <D3DVideoEncoder/D3D12VideoEncoder.hpp>
 
 #include <Windows.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -25,7 +24,7 @@ namespace DualIC4Varjo {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using D3D12CoreLib::D3D12QueueSyncPoint;
+namespace D3DVE = D3DVideoEncoderLib;
 
 struct SideRow {
     std::uint64_t rowIndex = 0;
@@ -67,12 +66,6 @@ struct PairRow {
     std::int64_t pairSyncTimestampDiffNs = 0;
     IC4Ext::FrameSyncTimestampSource syncTimestampSource =
         IC4Ext::FrameSyncTimestampSource::HostReceived;
-};
-
-struct PendingGpuPair {
-    IC4Ext::D3D12SyncedFrameSet frameSet;
-    D3D12QueueSyncPoint leftConsumed;
-    D3D12QueueSyncPoint rightConsumed;
 };
 
 const IC4Ext::D3D12IndexedCameraFrame* FindCamera(
@@ -138,38 +131,6 @@ std::int64_t SignedDifference(std::uint64_t left, std::uint64_t right)
         : -static_cast<std::int64_t>(value);
 }
 
-bool SyncPointComplete(const D3D12QueueSyncPoint& point) noexcept
-{
-    if (!point) return true;
-    ID3D12Fence* fence = point.GetFence();
-    return !fence || fence->GetCompletedValue() >= point.GetValue();
-}
-
-void WaitSyncPoint(const D3D12QueueSyncPoint& point)
-{
-    if (!point || SyncPointComplete(point)) return;
-    ID3D12Fence* fence = point.GetFence();
-    if (!fence) return;
-
-    HANDLE eventHandle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!eventHandle) {
-        throw std::runtime_error(
-            "CreateEventW failed while waiting for NVENC input consumption");
-    }
-    const HRESULT hr = fence->SetEventOnCompletion(point.GetValue(), eventHandle);
-    if (FAILED(hr)) {
-        CloseHandle(eventHandle);
-        throw std::runtime_error(
-            "SetEventOnCompletion failed for NVENC input consumption");
-    }
-    const DWORD waitResult = WaitForSingleObject(eventHandle, INFINITE);
-    CloseHandle(eventHandle);
-    if (waitResult != WAIT_OBJECT_0) {
-        throw std::runtime_error(
-            "WaitForSingleObject failed for NVENC input consumption");
-    }
-}
-
 std::pair<std::uint32_t, std::uint32_t> FrameRateRational(double fps)
 {
     if (!std::isfinite(fps) || fps <= 0.0) return {160u, 1u};
@@ -180,6 +141,16 @@ std::pair<std::uint32_t, std::uint32_t> FrameRateRational(double fps)
     return {
         static_cast<std::uint32_t>(std::llround(fps * 1000.0)),
         1000u};
+}
+
+std::int64_t FrameDuration100ns(
+    std::uint32_t fpsNumerator,
+    std::uint32_t fpsDenominator)
+{
+    const double duration = 10'000'000.0 *
+        static_cast<double>(std::max<std::uint32_t>(1u, fpsDenominator)) /
+        static_cast<double>(std::max<std::uint32_t>(1u, fpsNumerator));
+    return std::max<std::int64_t>(1, static_cast<std::int64_t>(std::llround(duration)));
 }
 
 void WriteHeader(std::ofstream& stream)
@@ -367,13 +338,13 @@ struct RawStereoNvencRecorder::Impl {
     std::ofstream leftMetadata;
     std::ofstream rightMetadata;
     std::ofstream pairMetadata;
-    std::unique_ptr<D3D12Nvenc::D3D12NvencVideoWriter> leftWriter;
-    std::unique_ptr<D3D12Nvenc::D3D12NvencVideoWriter> rightWriter;
-    std::deque<PendingGpuPair> pendingGpu;
+    std::unique_ptr<D3DVE::D3D12VideoEncoder> leftWriter;
+    std::unique_ptr<D3DVE::D3D12VideoEncoder> rightWriter;
     ClockMapper clockMapper;
     std::uint64_t rowIndex = 0;
     std::uint32_t fpsNumerator = 160;
     std::uint32_t fpsDenominator = 1;
+    std::int64_t frameDuration100ns = 62500;
 
     std::filesystem::path effectiveLeftVideoPath() const
     {
@@ -421,6 +392,40 @@ struct RawStereoNvencRecorder::Impl {
         WritePairHeader(pairMetadata);
     }
 
+    D3DVE::D3D12VideoEncoderDesc makeEncoderDesc(
+        const std::filesystem::path& outputPath,
+        const IC4Ext::D3D12CameraFrame& frame) const
+    {
+        D3DVE::D3D12VideoEncoderDesc desc{};
+        desc.outputPath = outputPath.wstring();
+        desc.width = static_cast<std::uint32_t>(frame.format.width);
+        desc.height = static_cast<std::uint32_t>(frame.format.height);
+        desc.frameRateNum = fpsNumerator;
+        desc.frameRateDen = fpsDenominator;
+        desc.backend = D3DVE::D3DVideoEncoderBackendType::NvencD3D12;
+        desc.codec = D3DVE::VideoCodec::H264;
+        desc.internalFormat = D3DVE::VideoPixelFormat::NV12;
+        desc.rateControl = D3DVE::VideoRateControlMode::ConstantQP;
+        desc.bitrate = 200'000'000;
+        desc.gopLength = std::max(
+            1u,
+            static_cast<std::uint32_t>(std::llround(config.frameRate * 2.0)));
+        desc.bFrameCount = 0;
+        desc.colorRange = D3DVE::VideoColorRange::Limited;
+        desc.colorMatrix = D3DVE::VideoColorMatrix::BT709;
+        desc.asyncMode = false;
+        desc.queueDepth = 4;
+        desc.enableDebugLog = true;
+        desc.input.core = config.core.get();
+        desc.input.inputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.input.allowFormatConversion = true;
+        desc.input.sourceWidth = static_cast<std::uint32_t>(frame.format.width);
+        desc.input.sourceHeight = static_cast<std::uint32_t>(frame.format.height);
+        desc.input.restoreStateAfterEncode = true;
+        desc.input.processingShaderDirectory = L"shaders/D3D12Processing";
+        return desc;
+    }
+
     void initializeWriters(const IC4Ext::D3D12CameraFrame& left,
                            const IC4Ext::D3D12CameraFrame& right)
     {
@@ -444,56 +449,24 @@ struct RawStereoNvencRecorder::Impl {
         if (leftResource->GetDesc().Format != DXGI_FORMAT_R8G8B8A8_UNORM ||
             rightResource->GetDesc().Format != DXGI_FORMAT_R8G8B8A8_UNORM) {
             throw std::runtime_error(
-                "D3D12NvencVideoWriter requires DXGI_FORMAT_R8G8B8A8_UNORM input");
+                "raw recorder requires DXGI_FORMAT_R8G8B8A8_UNORM input");
         }
 
         const auto rational = FrameRateRational(config.frameRate);
         fpsNumerator = rational.first;
         fpsDenominator = rational.second;
+        frameDuration100ns = FrameDuration100ns(fpsNumerator, fpsDenominator);
 
-        D3D12Nvenc::VideoWriterConfig writerConfig;
-        writerConfig.width = static_cast<std::uint32_t>(left.format.width);
-        writerConfig.height = static_cast<std::uint32_t>(left.format.height);
-        writerConfig.frameRateNumerator = fpsNumerator;
-        writerConfig.frameRateDenominator = fpsDenominator;
-        writerConfig.preset = D3D12Nvenc::Preset::P4;
-        writerConfig.rateControl = D3D12Nvenc::RateControl::ConstantQp;
-        writerConfig.constantQp = std::clamp(config.constantQp, 0u, 51u);
-        writerConfig.gopLength = std::max(
-            1u,
-            static_cast<std::uint32_t>(std::llround(config.frameRate * 2.0)));
-        writerConfig.maxBFrames = 0;
-        writerConfig.extraOutputDelay = 3;
-        writerConfig.lowLatency = false;
-        writerConfig.repeatSpsPps = true;
-        writerConfig.enableConsoleLog = true;
-        writerConfig.logEveryNFrames = 300;
-        writerConfig.shaderDirectory = "shaders/D3D12Processing";
-
-        leftWriter = std::make_unique<D3D12Nvenc::D3D12NvencVideoWriter>(
-            config.core, writerConfig, leftH264);
-        rightWriter = std::make_unique<D3D12Nvenc::D3D12NvencVideoWriter>(
-            config.core, writerConfig, rightH264);
+        leftWriter = std::make_unique<D3DVE::D3D12VideoEncoder>(
+            makeEncoderDesc(leftH264, left));
+        rightWriter = std::make_unique<D3DVE::D3D12VideoEncoder>(
+            makeEncoderDesc(rightH264, right));
 
         std::cout
-            << "[RAW_NVENC] initialized " << writerConfig.width << 'x'
-            << writerConfig.height << " @ " << fpsNumerator << '/'
-            << fpsDenominator << " fps, CQP=" << writerConfig.constantQp << '\n';
-    }
-
-    void releaseCompleted(bool waitAll)
-    {
-        while (!pendingGpu.empty()) {
-            auto& pending = pendingGpu.front();
-            if (waitAll) {
-                WaitSyncPoint(pending.leftConsumed);
-                WaitSyncPoint(pending.rightConsumed);
-            } else if (!SyncPointComplete(pending.leftConsumed) ||
-                       !SyncPointComplete(pending.rightConsumed)) {
-                break;
-            }
-            pendingGpu.pop_front();
-        }
+            << "[RAW_NVENC] initialized " << left.format.width << 'x'
+            << left.format.height << " @ " << fpsNumerator << '/'
+            << fpsDenominator
+            << " fps, H.264 NVENC via app recorder backend, CQP mode\n";
     }
 
     SideRow makeRow(
@@ -506,8 +479,7 @@ struct RawStereoNvencRecorder::Impl {
         std::int64_t endUnix,
         std::int64_t durationUs,
         std::int64_t readyWaitUs,
-        std::uint64_t encoderIndex,
-        const D3D12QueueSyncPoint& consumed)
+        std::uint64_t encoderIndex)
     {
         SideRow row;
         row.rowIndex = rowIndex;
@@ -531,7 +503,7 @@ struct RawStereoNvencRecorder::Impl {
         row.dxgiFormat = frame.dxgiFormat;
         row.resourceState = frame.resourceState;
         row.readyWaitUs = readyWaitUs;
-        row.inputConsumedFenceValue = consumed.GetValue();
+        row.inputConsumedFenceValue = 0;
         row.chunk = frame.chunkMetadata;
         return row;
     }
@@ -576,29 +548,27 @@ struct RawStereoNvencRecorder::Impl {
             ? right.textureResource.Get()
             : right.texture.Get();
 
+        const auto encoderIndex = rowIndex;
+        const std::int64_t timestamp100ns =
+            static_cast<std::int64_t>(encoderIndex) * frameDuration100ns;
+
         const auto leftBeginSystem = std::chrono::system_clock::now();
         const auto leftBeginSteady = Clock::now();
-        D3D12QueueSyncPoint leftConsumed = leftWriter->WriteFrame(
+        leftWriter->write(
             leftResource,
             left.resourceState,
-            left.resourceState,
-            nullptr);
+            timestamp100ns,
+            frameDuration100ns);
         const auto leftEndSteady = Clock::now();
         const auto leftEndSystem = std::chrono::system_clock::now();
 
-        D3D12QueueSyncPoint rightConsumed;
         const auto rightBeginSystem = std::chrono::system_clock::now();
         const auto rightBeginSteady = Clock::now();
-        try {
-            rightConsumed = rightWriter->WriteFrame(
-                rightResource,
-                right.resourceState,
-                right.resourceState,
-                nullptr);
-        } catch (...) {
-            WaitSyncPoint(leftConsumed);
-            throw;
-        }
+        rightWriter->write(
+            rightResource,
+            right.resourceState,
+            timestamp100ns,
+            frameDuration100ns);
         const auto rightEndSteady = Clock::now();
         const auto rightEndSystem = std::chrono::system_clock::now();
 
@@ -619,7 +589,6 @@ struct RawStereoNvencRecorder::Impl {
             std::chrono::duration_cast<std::chrono::microseconds>(
                 rightEndSteady - rightBeginSteady).count();
 
-        const auto encoderIndex = rowIndex;
         const SideRow leftRow = makeRow(
             set,
             left,
@@ -630,8 +599,7 @@ struct RawStereoNvencRecorder::Impl {
             toUnixUs(leftEndSystem),
             leftDurationUs,
             leftWaitUs,
-            encoderIndex,
-            leftConsumed);
+            encoderIndex);
         const SideRow rightRow = makeRow(
             set,
             right,
@@ -642,8 +610,7 @@ struct RawStereoNvencRecorder::Impl {
             toUnixUs(rightEndSystem),
             rightDurationUs,
             rightWaitUs,
-            encoderIndex,
-            rightConsumed);
+            encoderIndex);
         const PairRow pairRow{
             rowIndex + 1u,
             encoderIndex,
@@ -659,18 +626,6 @@ struct RawStereoNvencRecorder::Impl {
             pairSyncDiff,
             config.timestampSource,
         };
-
-        pendingGpu.push_back(PendingGpuPair{
-            std::move(set),
-            std::move(leftConsumed),
-            std::move(rightConsumed)});
-        releaseCompleted(false);
-        if (pendingGpu.size() >
-            std::max<std::size_t>(1, config.maximumPendingGpuPairs)) {
-            WaitSyncPoint(pendingGpu.front().leftConsumed);
-            WaitSyncPoint(pendingGpu.front().rightConsumed);
-            pendingGpu.pop_front();
-        }
 
         WriteRow(leftMetadata, leftRow);
         WriteRow(rightMetadata, rightRow);
@@ -689,9 +644,8 @@ struct RawStereoNvencRecorder::Impl {
 
     void finalize(bool remux)
     {
-        releaseCompleted(true);
-        if (leftWriter) leftWriter->Close();
-        if (rightWriter) rightWriter->Close();
+        if (leftWriter) leftWriter->close();
+        if (rightWriter) rightWriter->close();
         leftWriter.reset();
         rightWriter.reset();
         if (leftMetadata.is_open()) {
