@@ -64,11 +64,13 @@ set(DUAL_IC4_VARJO_VARJOXR_TAG
 set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG
     "8512ba418dc0e63c67b6e0518ef84dc2b53fb39d")
 set(DUAL_IC4_VARJO_D3D12HELPER_TAG "v1.13.0")
+set(DUAL_IC4_VARJO_D3DVIDEOENCODER_TAG
+    "5c4190dc19ef06550cce1a24f33c33c961636148")
 set(DUAL_IC4_VARJO_IMGUI_TAG "v1.92.5")
 
 set(IC4_SDK_ROOT "" CACHE PATH "Path to the IC Imaging Control 4 SDK root")
-set(D3D12_NVENC_VIDEO_WRITER_ROOT "" CACHE PATH
-    "Path to the uploaded D3D12NvencVideoWriter project root")
+set(VIDEO_CODEC_SDK_ROOT "" CACHE PATH
+    "Path to the NVIDIA Video Codec SDK root, e.g. Video_Codec_SDK_13.1.15")
 
 function(dual_ic4_varjo_normalize_ic4_root candidate out_root)
     if(NOT candidate)
@@ -199,42 +201,43 @@ find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc calib3d highgui)
 message(STATUS "DualIC4VarjoApp: OpenCV version = ${OpenCV_VERSION}")
 message(STATUS "DualIC4VarjoApp: OpenCV directory = ${OpenCV_DIR}")
 
-if(NOT D3D12_NVENC_VIDEO_WRITER_ROOT AND
-   DEFINED ENV{D3D12_NVENC_VIDEO_WRITER_ROOT} AND
-   NOT "$ENV{D3D12_NVENC_VIDEO_WRITER_ROOT}" STREQUAL "")
-    file(TO_CMAKE_PATH
-        "$ENV{D3D12_NVENC_VIDEO_WRITER_ROOT}"
-        D3D12_NVENC_VIDEO_WRITER_ROOT)
+if(NOT VIDEO_CODEC_SDK_ROOT AND
+   DEFINED ENV{VIDEO_CODEC_SDK_ROOT} AND
+   NOT "$ENV{VIDEO_CODEC_SDK_ROOT}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{VIDEO_CODEC_SDK_ROOT}" VIDEO_CODEC_SDK_ROOT)
+endif()
+if(NOT VIDEO_CODEC_SDK_ROOT AND
+   DEFINED ENV{NV_CODEC_SDK_ROOT} AND
+   NOT "$ENV{NV_CODEC_SDK_ROOT}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{NV_CODEC_SDK_ROOT}" VIDEO_CODEC_SDK_ROOT)
 endif()
 
-set(_dual_ic4_nvenc_writer_candidates
-    "${D3D12_NVENC_VIDEO_WRITER_ROOT}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/external/D3D12NvencVideoWriter"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../D3D12NvencVideoWriter")
-set(_dual_ic4_nvenc_writer_root "")
-foreach(candidate IN LISTS _dual_ic4_nvenc_writer_candidates)
-    if(candidate AND
-       EXISTS "${candidate}/CMakeLists.txt" AND
-       EXISTS "${candidate}/include/D3D12NvencVideoWriter/D3D12NvencVideoWriter.hpp")
-        set(_dual_ic4_nvenc_writer_root "${candidate}")
-        break()
-    endif()
-endforeach()
-
-if(NOT _dual_ic4_nvenc_writer_root)
+set(_dual_ic4_nvenc_include_dir "")
+if(VIDEO_CODEC_SDK_ROOT AND EXISTS "${VIDEO_CODEC_SDK_ROOT}/Interface/nvEncodeAPI.h")
+    set(_dual_ic4_nvenc_include_dir "${VIDEO_CODEC_SDK_ROOT}/Interface")
+elseif(VIDEO_CODEC_SDK_ROOT AND EXISTS "${VIDEO_CODEC_SDK_ROOT}/nvEncodeAPI.h")
+    set(_dual_ic4_nvenc_include_dir "${VIDEO_CODEC_SDK_ROOT}")
+endif()
+if(NOT _dual_ic4_nvenc_include_dir)
     message(FATAL_ERROR
-        "D3D12NvencVideoWriter was not found. Extract the uploaded library and "
-        "pass -DD3D12_NVENC_VIDEO_WRITER_ROOT=<path>/D3D12NvencVideoWriter, or "
-        "set the D3D12_NVENC_VIDEO_WRITER_ROOT environment variable.")
+        "VIDEO_CODEC_SDK_ROOT is invalid. Expected Interface/nvEncodeAPI.h under the NVIDIA Video Codec SDK root. "
+        "Configure with -DVIDEO_CODEC_SDK_ROOT=<path>/Video_Codec_SDK_13.1.15 or set VIDEO_CODEC_SDK_ROOT/NV_CODEC_SDK_ROOT.")
 endif()
+message(STATUS "DualIC4VarjoApp: Video Codec SDK include = ${_dual_ic4_nvenc_include_dir}")
 
-set(D3D12_NVENC_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
-add_subdirectory(
-    "${_dual_ic4_nvenc_writer_root}"
-    "${CMAKE_BINARY_DIR}/_deps/D3D12NvencVideoWriter"
-    EXCLUDE_FROM_ALL)
-message(STATUS
-    "DualIC4VarjoApp: D3D12NvencVideoWriter root = ${_dual_ic4_nvenc_writer_root}")
+set(D3DVIDEOENCODER_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
+set(D3DVIDEOENCODER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(D3DVIDEOENCODER_ENABLE_WARNINGS OFF CACHE BOOL "" FORCE)
+set(D3DVIDEOENCODER_ENABLE_NVENC ON CACHE BOOL "" FORCE)
+set(D3DVIDEOENCODER_ENABLE_D3D12_VIDEO_ENCODE OFF CACHE BOOL "" FORCE)
+set(D3DVIDEOENCODER_NVENC_INCLUDE_DIR
+    "${_dual_ic4_nvenc_include_dir}" CACHE PATH "" FORCE)
+FetchContent_Declare(
+    D3DVideoEncoder
+    GIT_REPOSITORY https://github.com/Isasa2357/D3DVideoEncoder.git
+    GIT_TAG        ${DUAL_IC4_VARJO_D3DVIDEOENCODER_TAG}
+    GIT_SHALLOW    FALSE)
+FetchContent_MakeAvailable(D3DVideoEncoder)
 
 FetchContent_Declare(
     DearImGui
@@ -322,7 +325,7 @@ target_link_libraries(DualIC4VarjoApp PRIVATE
     VarjoXR::VarjoXR
     VarjoToolkit::VarjoToolkit
     DualIC4Varjo::ImGui
-    D3D12Nvenc::VideoWriter
+    D3DVideoEncoder::D3DVideoEncoder
     nlohmann_json::nlohmann_json
     d3dcompiler
     shell32
@@ -363,11 +366,11 @@ if(_dual_ic4_d3d12helper_shader_root)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${_dual_ic4_d3d12helper_shader_root}"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
-        COMMENT "Copying D3D12Helper processing shaders for NVENC recording"
+        COMMENT "Copying D3D12Helper processing shaders for raw camera recording"
         VERBATIM)
 else()
     message(WARNING
-        "D3D12Helper shader directory was not found. The NVENC writer requires "
+        "D3D12Helper shader directory was not found. The raw camera recorder requires "
         "shaders/D3D12Processing next to DualIC4VarjoApp.exe or in the working directory.")
 endif()
 
