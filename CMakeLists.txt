@@ -44,6 +44,14 @@ if(CMAKE_HOST_WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif()
 endif()
 
+# The project copies runtime DLLs explicitly below. Disable vcpkg's injected
+# z-applocal post-build step because it can fail when antivirus or another
+# process temporarily locks the freshly linked executable.
+if(CMAKE_HOST_WIN32)
+    set(X_VCPKG_APPLOCAL_DEPS OFF CACHE BOOL
+        "Disable vcpkg app-local dependency deployment" FORCE)
+endif()
+
 project(DualIC4VarjoApp_AdaptiveGazeGuidance
     VERSION 0.21.4
     LANGUAGES CXX)
