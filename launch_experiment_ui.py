@@ -13,9 +13,9 @@ from tkinter import messagebox, ttk
 REPO_ROOT = Path(__file__).resolve().parent
 APP_EXE = REPO_ROOT / "out" / "build" / "default" / "Release" / "DualIC4VarjoApp.exe"
 
-LEFT_JSON = Path(r"C:\Users\MiyafujiLab2\Downloads\gamma1.json")
-RIGHT_JSON = Path(r"C:\Users\MiyafujiLab2\Downloads\gamma1.json")
-CALIB_JSON = Path(r"C:\Users\MiyafujiLab2\Downloads\stereo_calibration.json")
+LEFT_JSON = Path(r"gamma1.json")
+RIGHT_JSON = Path(r"gamma1.json")
+CALIB_JSON = Path(r"stereo_calibration.json")
 
 CONDITION_TO_POSTPROCESS = {
     "none": "none",

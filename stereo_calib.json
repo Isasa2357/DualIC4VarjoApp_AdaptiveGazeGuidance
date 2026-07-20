@@ -1,0 +1,84 @@
+{
+  "default_profile": "checkerboard_uncalibrated",
+  "format": "vdca.stereo_rectification",
+  "image_geometry": {
+    "calibration_input_size": {
+      "height": 1536,
+      "width": 1536
+    },
+    "rectified_output_size": {
+      "height": 1536,
+      "width": 1536
+    },
+    "source_size": {
+      "height": 1536,
+      "width": 1536
+    }
+  },
+  "preprocess": {
+    "resize": {
+      "mode": "none"
+    },
+    "right_order": "same"
+  },
+  "profiles": {
+    "checkerboard_uncalibrated": {
+      "eyes": {
+        "left": {
+          "inverse_pixel_homography": {
+            "rows": [
+              [
+                130.8693728908586,
+                11.380723389034657,
+                -17956.902003979754
+              ],
+              [
+                5.7835816721364495,
+                114.81900462987554,
+                4269.065358684873
+              ],
+              [
+                0.018990080227662576,
+                -0.0002464041137723999,
+                100.37606347839456
+              ]
+            ]
+          }
+        },
+        "right": {
+          "inverse_pixel_homography": {
+            "rows": [
+              [
+                1.1047410829864488,
+                0.01804618452072171,
+                -94.30062144550743
+              ],
+              [
+                0.08685774411295749,
+                0.9998371543527694,
+                -66.58168202167869
+              ],
+              [
+                0.0001365936570751061,
+                3.469446951953614e-18,
+                0.8950960713663205
+              ]
+            ]
+          }
+        }
+      },
+      "method": "opencv_checkerboard_stereoRectifyUncalibrated"
+    }
+  },
+  "sampling": {
+    "border_mode": "constant",
+    "border_rgba": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "filter": "linear"
+  },
+  "version": 1
+}
