@@ -9,14 +9,21 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -151,6 +158,12 @@ std::int64_t FrameDuration100ns(
         static_cast<double>(std::max<std::uint32_t>(1u, fpsDenominator)) /
         static_cast<double>(std::max<std::uint32_t>(1u, fpsNumerator));
     return std::max<std::int64_t>(1, static_cast<std::int64_t>(std::llround(duration)));
+}
+
+std::int64_t ToUnixUs(const std::chrono::system_clock::time_point& value)
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        value.time_since_epoch()).count();
 }
 
 void WriteHeader(std::ofstream& stream)
@@ -315,6 +328,105 @@ struct RawStereoNvencRecorder::Impl {
     {
     }
 
+    struct PairState {
+        IC4Ext::D3D12SyncedFrameSet frameSet;
+        std::uint64_t rowIndex = 0;
+        std::int64_t pairSyncDiff = 0;
+        std::int64_t pairHostDiff = 0;
+        std::int64_t leftReadyWaitUs = 0;
+        std::int64_t rightReadyWaitUs = 0;
+        std::int64_t timestamp100ns = 0;
+        std::int64_t duration100ns = 0;
+        std::atomic<int> completedSides{0};
+    };
+
+    struct SideEncodeJob {
+        std::shared_ptr<PairState> pair;
+    };
+
+    class SideEncoderWorker final {
+    public:
+        void start(Impl& owner, bool leftSide, std::size_t capacity)
+        {
+            owner_ = &owner;
+            leftSide_ = leftSide;
+            capacity_ = std::max<std::size_t>(1, capacity);
+            closed_ = false;
+            worker_ = std::thread(&SideEncoderWorker::run, this);
+        }
+
+        void push(SideEncodeJob job)
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cvNotFull_.wait(lock, [&]() {
+                return closed_ || queue_.size() < capacity_;
+            });
+            if (closed_) {
+                throw std::runtime_error("raw recorder side encoder queue is closed");
+            }
+            queue_.push_back(std::move(job));
+            cvNotEmpty_.notify_one();
+        }
+
+        void closeAndJoin() noexcept
+        {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                closed_ = true;
+            }
+            cvNotEmpty_.notify_all();
+            cvNotFull_.notify_all();
+            if (worker_.joinable() && worker_.get_id() != std::this_thread::get_id()) {
+                try {
+                    worker_.join();
+                } catch (...) {
+                }
+            }
+        }
+
+    private:
+        void run() noexcept
+        {
+            for (;;) {
+                SideEncodeJob job;
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    cvNotEmpty_.wait(lock, [&]() {
+                        return closed_ || !queue_.empty();
+                    });
+                    if (queue_.empty()) {
+                        if (closed_) break;
+                        continue;
+                    }
+                    job = std::move(queue_.front());
+                    queue_.pop_front();
+                    cvNotFull_.notify_one();
+                }
+
+                try {
+                    if (owner_) owner_->encodeSide(leftSide_, std::move(job));
+                } catch (...) {
+                    if (owner_) {
+                        owner_->failed.fetch_add(1, std::memory_order_acq_rel);
+                        owner_->setException(std::current_exception());
+                        owner_->stopRequested.store(true, std::memory_order_release);
+                    }
+                    break;
+                }
+            }
+        }
+
+        Impl* owner_ = nullptr;
+        bool leftSide_ = true;
+        std::size_t capacity_ = 1;
+        std::thread worker_;
+        std::mutex mutex_;
+        std::condition_variable cvNotEmpty_;
+        std::condition_variable cvNotFull_;
+        std::deque<SideEncodeJob> queue_;
+        bool closed_ = false;
+    };
+
     RawStereoNvencRecorderConfig config;
     std::filesystem::path leftH264;
     std::filesystem::path rightH264;
@@ -345,6 +457,14 @@ struct RawStereoNvencRecorder::Impl {
     std::uint32_t fpsNumerator = 160;
     std::uint32_t fpsDenominator = 1;
     std::int64_t frameDuration100ns = 62500;
+    SideEncoderWorker leftWorker;
+    SideEncoderWorker rightWorker;
+    bool workersStarted = false;
+
+    std::size_t sideQueueCapacity() const noexcept
+    {
+        return std::max<std::size_t>(64, config.maximumPendingGpuPairs);
+    }
 
     std::filesystem::path effectiveLeftVideoPath() const
     {
@@ -414,8 +534,8 @@ struct RawStereoNvencRecorder::Impl {
         desc.colorRange = D3DVE::VideoColorRange::Limited;
         desc.colorMatrix = D3DVE::VideoColorMatrix::BT709;
         desc.asyncMode = false;
-        desc.queueDepth = 4;
-        desc.enableDebugLog = true;
+        desc.queueDepth = 1;
+        desc.enableDebugLog = false;
         desc.input.core = config.core.get();
         desc.input.inputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
         desc.input.allowFormatConversion = true;
@@ -462,35 +582,39 @@ struct RawStereoNvencRecorder::Impl {
         rightWriter = std::make_unique<D3DVE::D3D12VideoEncoder>(
             makeEncoderDesc(rightH264, right));
 
+        const std::size_t capacity = sideQueueCapacity();
+        leftWorker.start(*this, true, capacity);
+        rightWorker.start(*this, false, capacity);
+        workersStarted = true;
+
         std::cout
             << "[RAW_NVENC] initialized " << left.format.width << 'x'
             << left.format.height << " @ " << fpsNumerator << '/'
             << fpsDenominator
-            << " fps, H.264 NVENC via app recorder backend, CQP mode\n";
+            << " fps, H.264 NVENC via app recorder backend, "
+            << "left/right encode workers=2, side_queue_capacity="
+            << capacity << '\n';
     }
 
     SideRow makeRow(
-        const IC4Ext::D3D12SyncedFrameSet& set,
+        const PairState& pair,
         const IC4Ext::D3D12CameraFrame& frame,
         const IC4Ext::D3D12CameraFrame& paired,
-        std::int64_t pairSyncDiff,
-        std::int64_t pairHostDiff,
         std::int64_t beginUnix,
         std::int64_t endUnix,
         std::int64_t durationUs,
-        std::int64_t readyWaitUs,
-        std::uint64_t encoderIndex)
+        std::int64_t readyWaitUs) const
     {
         SideRow row;
-        row.rowIndex = rowIndex;
-        row.syncGroupId = set.syncGroupId;
-        row.syncEmittedUnixUs = clockMapper.unixMicroseconds(set.emittedTime);
-        row.pairSyncTimestampDiffNs = pairSyncDiff;
-        row.pairHostReceivedDiffUs = pairHostDiff;
+        row.rowIndex = pair.rowIndex;
+        row.syncGroupId = pair.frameSet.syncGroupId;
+        row.syncEmittedUnixUs = clockMapper.unixMicroseconds(pair.frameSet.emittedTime);
+        row.pairSyncTimestampDiffNs = pair.pairSyncDiff;
+        row.pairHostReceivedDiffUs = pair.pairHostDiff;
         row.encodeBeginUnixUs = beginUnix;
         row.encodeEndUnixUs = endUnix;
         row.encodeDurationUs = durationUs;
-        row.encoderFrameIndex = encoderIndex;
+        row.encoderFrameIndex = pair.rowIndex;
         row.frameNumber = frame.timing.frameNumber;
         row.pairedFrameNumber = paired.timing.frameNumber;
         row.deviceTimestampNs = frame.timing.deviceTimestampNs;
@@ -508,11 +632,77 @@ struct RawStereoNvencRecorder::Impl {
         return row;
     }
 
+    void encodeSide(bool leftSide, SideEncodeJob job)
+    {
+        if (!job.pair) return;
+        auto& pair = *job.pair;
+        const auto* selfIndexed = FindCamera(pair.frameSet, leftSide ? 0u : 1u);
+        const auto* otherIndexed = FindCamera(pair.frameSet, leftSide ? 1u : 0u);
+        if (!selfIndexed || !otherIndexed) {
+            throw std::runtime_error("raw recorder side worker received an incomplete pair");
+        }
+
+        const auto& frame = selfIndexed->frame;
+        const auto& paired = otherIndexed->frame;
+        ID3D12Resource* resource = frame.textureResource
+            ? frame.textureResource.Get()
+            : frame.texture.Get();
+        if (!resource) {
+            throw std::runtime_error("raw recorder side worker received a null texture");
+        }
+
+        auto& writer = leftSide ? leftWriter : rightWriter;
+        auto& metadata = leftSide ? leftMetadata : rightMetadata;
+        if (!writer) {
+            throw std::runtime_error("raw recorder side writer was not initialized");
+        }
+
+        const auto beginSystem = std::chrono::system_clock::now();
+        const auto beginSteady = Clock::now();
+        writer->write(
+            resource,
+            frame.resourceState,
+            pair.timestamp100ns,
+            pair.duration100ns);
+        const auto endSteady = Clock::now();
+        const auto endSystem = std::chrono::system_clock::now();
+
+        const auto durationUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            endSteady - beginSteady).count();
+        const SideRow row = makeRow(
+            pair,
+            frame,
+            paired,
+            ToUnixUs(beginSystem),
+            ToUnixUs(endSystem),
+            durationUs,
+            leftSide ? pair.leftReadyWaitUs : pair.rightReadyWaitUs);
+
+        WriteRow(metadata, row);
+        if (!metadata) {
+            throw std::runtime_error("raw-video side metadata CSV write failed");
+        }
+        if (((pair.rowIndex + 1u) % 300u) == 0u) {
+            metadata.flush();
+        }
+
+        if (pair.completedSides.fetch_add(1, std::memory_order_acq_rel) + 1 == 2) {
+            written.fetch_add(1, std::memory_order_acq_rel);
+        }
+    }
+
     void processPair(IC4Ext::D3D12SyncedFrameSet set)
     {
         received.fetch_add(1, std::memory_order_acq_rel);
-        const auto* leftIndexed = FindCamera(set, 0);
-        const auto* rightIndexed = FindCamera(set, 1);
+
+        auto pair = std::make_shared<PairState>();
+        pair->frameSet = std::move(set);
+        pair->rowIndex = rowIndex;
+        pair->timestamp100ns = static_cast<std::int64_t>(rowIndex) * frameDuration100ns;
+        pair->duration100ns = frameDuration100ns;
+
+        const auto* leftIndexed = FindCamera(pair->frameSet, 0);
+        const auto* rightIndexed = FindCamera(pair->frameSet, 1);
         if (!leftIndexed || !rightIndexed) {
             throw std::runtime_error(
                 "raw recorder received an incomplete synchronized pair");
@@ -520,11 +710,13 @@ struct RawStereoNvencRecorder::Impl {
         const auto& left = leftIndexed->frame;
         const auto& right = rightIndexed->frame;
         initializeWriters(left, right);
+        pair->timestamp100ns = static_cast<std::int64_t>(rowIndex) * frameDuration100ns;
+        pair->duration100ns = frameDuration100ns;
 
-        const std::int64_t pairSyncDiff = SignedDifference(
+        pair->pairSyncDiff = SignedDifference(
             SyncTimestampNs(left, config.timestampSource),
             SyncTimestampNs(right, config.timestampSource));
-        const std::int64_t pairHostDiff = SignedDifference(
+        pair->pairHostDiff = SignedDifference(
             HostTimestampNs(left), HostTimestampNs(right)) / 1000;
         const std::int64_t pairDeviceDiff = SignedDifference(
             left.timing.deviceTimestampNs,
@@ -540,110 +732,47 @@ struct RawStereoNvencRecorder::Impl {
             throw std::runtime_error("right raw frame GPU-ready wait failed");
         }
         const auto rightWaitEnd = Clock::now();
+        pair->leftReadyWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            leftWaitEnd - leftWaitBegin).count();
+        pair->rightReadyWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            rightWaitEnd - rightWaitBegin).count();
 
-        ID3D12Resource* leftResource = left.textureResource
-            ? left.textureResource.Get()
-            : left.texture.Get();
-        ID3D12Resource* rightResource = right.textureResource
-            ? right.textureResource.Get()
-            : right.texture.Get();
-
-        const auto encoderIndex = rowIndex;
-        const std::int64_t timestamp100ns =
-            static_cast<std::int64_t>(encoderIndex) * frameDuration100ns;
-
-        const auto leftBeginSystem = std::chrono::system_clock::now();
-        const auto leftBeginSteady = Clock::now();
-        leftWriter->write(
-            leftResource,
-            left.resourceState,
-            timestamp100ns,
-            frameDuration100ns);
-        const auto leftEndSteady = Clock::now();
-        const auto leftEndSystem = std::chrono::system_clock::now();
-
-        const auto rightBeginSystem = std::chrono::system_clock::now();
-        const auto rightBeginSteady = Clock::now();
-        rightWriter->write(
-            rightResource,
-            right.resourceState,
-            timestamp100ns,
-            frameDuration100ns);
-        const auto rightEndSteady = Clock::now();
-        const auto rightEndSystem = std::chrono::system_clock::now();
-
-        const auto toUnixUs = [](const auto& value) {
-            return std::chrono::duration_cast<std::chrono::microseconds>(
-                value.time_since_epoch()).count();
-        };
-        const auto leftWaitUs =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                leftWaitEnd - leftWaitBegin).count();
-        const auto rightWaitUs =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                rightWaitEnd - rightWaitBegin).count();
-        const auto leftDurationUs =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                leftEndSteady - leftBeginSteady).count();
-        const auto rightDurationUs =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                rightEndSteady - rightBeginSteady).count();
-
-        const SideRow leftRow = makeRow(
-            set,
-            left,
-            right,
-            pairSyncDiff,
-            pairHostDiff,
-            toUnixUs(leftBeginSystem),
-            toUnixUs(leftEndSystem),
-            leftDurationUs,
-            leftWaitUs,
-            encoderIndex);
-        const SideRow rightRow = makeRow(
-            set,
-            right,
-            left,
-            pairSyncDiff,
-            pairHostDiff,
-            toUnixUs(rightBeginSystem),
-            toUnixUs(rightEndSystem),
-            rightDurationUs,
-            rightWaitUs,
-            encoderIndex);
         const PairRow pairRow{
             rowIndex + 1u,
-            encoderIndex,
-            set.syncGroupId,
+            rowIndex,
+            pair->frameSet.syncGroupId,
             left.timing.frameNumber,
             right.timing.frameNumber,
             clockMapper.unixMicroseconds(left.timing.hostReceivedTime),
             clockMapper.unixMicroseconds(right.timing.hostReceivedTime),
-            pairHostDiff,
+            pair->pairHostDiff,
             left.timing.deviceTimestampNs,
             right.timing.deviceTimestampNs,
             pairDeviceDiff,
-            pairSyncDiff,
+            pair->pairSyncDiff,
             config.timestampSource,
         };
 
-        WriteRow(leftMetadata, leftRow);
-        WriteRow(rightMetadata, rightRow);
         WritePairRow(pairMetadata, pairRow);
-        if (!leftMetadata || !rightMetadata || !pairMetadata) {
-            throw std::runtime_error("raw-video metadata CSV write failed");
+        if (!pairMetadata) {
+            throw std::runtime_error("raw-video pair metadata CSV write failed");
         }
-        ++rowIndex;
-        written.fetch_add(1, std::memory_order_acq_rel);
-        if ((rowIndex % 300u) == 0u) {
-            leftMetadata.flush();
-            rightMetadata.flush();
+        if (((rowIndex + 1u) % 300u) == 0u) {
             pairMetadata.flush();
         }
+
+        leftWorker.push(SideEncodeJob{pair});
+        rightWorker.push(SideEncodeJob{std::move(pair)});
+        ++rowIndex;
     }
 
     void finalize(bool remux)
     {
+        if (workersStarted) {
+            leftWorker.closeAndJoin();
+            rightWorker.closeAndJoin();
+            workersStarted = false;
+        }
         if (leftWriter) leftWriter->close();
         if (rightWriter) rightWriter->close();
         leftWriter.reset();
