@@ -7,6 +7,7 @@
 #define NOMINMAX
 #endif
 
+#include "CalibrationRuntimeBridge.hpp"
 #include "GuiControlBridge.hpp"
 #include "RawStereoNvencRecordingIntegration.hpp"
 #include "VarjoFadeOutPostProcess.hpp"
@@ -223,6 +224,32 @@ public:
         return true;
     }
 
+    void suspendPlaneMaskForCalibration()
+    {
+        if (fadeStarted_.load(std::memory_order_acquire)) return;
+
+        std::unique_ptr<VarjoFadeOutPostProcess> postProcess;
+        bool shouldLog = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            postProcess = std::move(postProcess_);
+            planeMaskWarningPrinted_ = false;
+            planeMaskRectPrinted_ = false;
+            hiddenPassThroughLogged_ = false;
+            if (!calibrationSuspendedLogged_) {
+                calibrationSuspendedLogged_ = true;
+                shouldLog = true;
+            }
+        }
+
+        if (postProcess) postProcess->stop();
+        if (shouldLog) {
+            std::cout
+                << "[VST_POSTPROCESS] suspended during checkerboard calibration; "
+                << "Plane-time VST blur/darken will resume after calibration\n";
+        }
+    }
+
     void updatePlaneMask(const VarjoFadeOutPostProcess::PlaneMaskRects& rects)
     {
         if (fadeStarted_.load(std::memory_order_acquire)) return;
@@ -280,6 +307,16 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             if (shutdownReady_.load(std::memory_order_acquire)) return true;
             if (fadeStarted_.load(std::memory_order_acquire)) return true;
+        }
+
+        if (CalibrationRuntimeBridge::gCalibrationActive.load(
+                std::memory_order_acquire)) {
+            lastError_ = "VST fade-out is disabled during checkerboard calibration";
+            shutdownReady_.store(true, std::memory_order_release);
+            std::cerr
+                << "[FADE] " << (trigger ? trigger : "shutdown")
+                << " requested during calibration; VST fade-out skipped\n";
+            return false;
         }
 
         if (!initializeWhenPlaneAvailable()) {
@@ -429,6 +466,7 @@ private:
     bool planeMaskWarningPrinted_ = false;
     bool planeMaskRectPrinted_ = false;
     bool hiddenPassThroughLogged_ = false;
+    bool calibrationSuspendedLogged_ = false;
     std::string lastError_;
 };
 
@@ -455,6 +493,12 @@ inline void UpdatePlaneMaskFromFrame(
     const VarjoXR::XRPlane& plane,
     const VarjoFrameInfoSnapshot& snapshot)
 {
+    if (CalibrationRuntimeBridge::gCalibrationActive.load(
+            std::memory_order_acquire)) {
+        Manager::instance().suspendPlaneMaskForCalibration();
+        return;
+    }
+
     Manager::instance().updatePlaneMask(detail::ProjectPlaneRects(plane, snapshot));
 }
 
