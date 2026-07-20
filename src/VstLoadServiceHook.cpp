@@ -1,5 +1,7 @@
 #include "VstLoadServiceHook.hpp"
 
+#include "ExperimentOutput.hpp"
+
 #include <iostream>
 #include <string>
 
@@ -31,6 +33,14 @@ void VstLoadServiceHook::stop() noexcept
 
 std::filesystem::path VstLoadServiceHook::outputDirectory()
 {
+    // Compatibility path for UI/status code that was originally written around
+    // the VST recorder. VST recording is disabled, but the raw camera recorder
+    // writes *_left_raw_metadata.csv and *_right_raw_metadata.csv into the active
+    // experiment directory. Returning that directory keeps the ImGui video-codec
+    // FPS graph connected to the current camera recording metadata.
+    if (const auto layout = ActiveExperimentOutputLayout()) {
+        return layout->directory;
+    }
     return {};
 }
 
