@@ -591,7 +591,7 @@ struct RawStereoNvencRecorder::Impl {
             << "[RAW_NVENC] initialized " << left.format.width << 'x'
             << left.format.height << " @ " << fpsNumerator << '/'
             << fpsDenominator
-            << " fps, H.264 NVENC via app recorder backend, "
+            << " fps, H.264 NVENC via app recorder backend, CQP=23, "
             << "left/right encode workers=2, side_queue_capacity="
             << capacity << '\n';
     }
