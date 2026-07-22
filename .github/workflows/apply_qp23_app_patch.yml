@@ -1,0 +1,66 @@
+name: Apply camera recording QP 23 patch
+
+on:
+  push:
+    branches:
+      - experiment/vst-video-render-once
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/vst-video-render-once
+          fetch-depth: 0
+
+      - name: Update D3DVideoEncoder pin and camera recorder QP
+        shell: python
+        run: |
+          from pathlib import Path
+
+          replacements = {
+              Path("CMakeLists.txt"): [
+                  (
+                      'set(DUAL_IC4_VARJO_D3DVIDEOENCODER_TAG\n    "5c4190dc19ef06550cce1a24f33c33c961636148")',
+                      'set(DUAL_IC4_VARJO_D3DVIDEOENCODER_TAG\n    "0acbc462b9f4ccda662c6c9483ce20b2ade4bbf4")',
+                  ),
+              ],
+              Path("src/RawStereoNvencRecordingIntegration.hpp"): [
+                  ("config.constantQp = 18;", "config.constantQp = 23;"),
+              ],
+              Path("src/RawStereoNvencRecorder.hpp"): [
+                  ("std::uint32_t constantQp = 18;", "std::uint32_t constantQp = 23;"),
+              ],
+              Path("src/RawStereoNvencRecorder.cpp"): [
+                  (
+                      '<< " fps, H.264 NVENC via app recorder backend, "\n            << "left/right encode workers=2, side_queue_capacity="',
+                      '<< " fps, H.264 NVENC via app recorder backend, CQP=23, "\n            << "left/right encode workers=2, side_queue_capacity="',
+                  ),
+              ],
+          }
+
+          for path, edits in replacements.items():
+              text = path.read_text(encoding="utf-8")
+              for old, new in edits:
+                  if old not in text:
+                      raise SystemExit(f"Expected text was not found in {path}: {old!r}")
+                  text = text.replace(old, new, 1)
+              path.write_text(text, encoding="utf-8")
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No patch required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CMakeLists.txt src/RawStereoNvencRecordingIntegration.hpp src/RawStereoNvencRecorder.hpp src/RawStereoNvencRecorder.cpp
+          git commit -m "Record raw camera streams with QP 23"
+          git push origin HEAD:experiment/vst-video-render-once
