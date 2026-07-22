@@ -10,7 +10,19 @@
 #include "BlackCirclePlaneIntegration.hpp"
 #include "CalibrationRuntimeBridge.hpp"
 #include "DebugCenterDotPlaneIntegration.hpp"
+#include "VstVideoRenderOnceHook.hpp"
+
+// Varjo MR video render is a runtime state switch, not per-frame state. The
+// VST postprocess path updates constants every frame, but it should not send
+// varjo_MRSetVideoRender(true) through IPC every frame. Route only the
+// FadeOutPostProcessIntegration include through this hook so the rest of the
+// application keeps the normal Varjo API surface.
+#define varjo_MRSetVideoRender DualIC4Varjo::VstVideoRenderOnceHook::SetVideoRender
+#define varjo_GetError DualIC4Varjo::VstVideoRenderOnceHook::GetError
 #include "FadeOutPostProcessIntegration.hpp"
+#undef varjo_GetError
+#undef varjo_MRSetVideoRender
+
 #include "GracefulShutdownIntegration.hpp"
 #include "GuiPerformanceStats.hpp"
 #include "GuiPlaneControlIntegration.hpp"

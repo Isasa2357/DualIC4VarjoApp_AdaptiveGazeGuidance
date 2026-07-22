@@ -23,9 +23,11 @@ namespace IC4Ext {
 //
 // It provides the D3D12CameraCaptureThread API used by the application while:
 //  1. retrying non-strict IC4 JSON state application after removing properties
-//     explicitly reported by IC4 as unavailable, and
+//     explicitly reported by IC4 as unavailable,
 //  2. pausing acquisition on the first camera until the second camera has also
-//     completed stream setup.
+//     completed stream setup, and
+//  3. forcing both cameras into GenICam hardware-triggered FrameStart mode so a
+//     shared trigger edge exposes the stereo pair as close together as possible.
 class CoordinatedD3D12CameraCaptureThread {
 public:
     CoordinatedD3D12CameraCaptureThread(
@@ -38,6 +40,7 @@ public:
         , backend_(backend)
         , options_(options)
     {
+        applyHardwareTriggerSyncOverride();
         rebuildUnderlying();
     }
 
@@ -324,6 +327,26 @@ private:
             << " skipped unavailable JSON property '" << property
             << "' and will retry camera setup\n";
         return true;
+    }
+
+    void applyHardwareTriggerSyncOverride()
+    {
+        constexpr const char* triggerSource = "Line1";
+        constexpr const char* triggerSelector = "FrameStart";
+        constexpr const char* triggerActivation = "RisingEdge";
+
+        ConfigureHardwareTriggerSync(
+            config_,
+            triggerSource,
+            triggerSelector,
+            triggerActivation);
+
+        std::cout
+            << "[IC4][TRIGGER] deviceIndex=" << selector_.deviceIndex
+            << " hardware trigger requested: TriggerSelector="
+            << triggerSelector
+            << ", TriggerMode=On, TriggerSource=" << triggerSource
+            << ", TriggerActivation=" << triggerActivation << '\n';
     }
 
     void rebuildUnderlying()

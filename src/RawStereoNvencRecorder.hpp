@@ -21,7 +21,7 @@ struct RawStereoNvencRecorderConfig {
     double frameRate = 160.0;
     IC4Ext::FrameSyncTimestampSource timestampSource =
         IC4Ext::FrameSyncTimestampSource::HostReceived;
-    std::uint32_t constantQp = 18;
+    std::uint32_t constantQp = 23;
     std::size_t maximumPendingGpuPairs = 32;
 
     // Keep shutdown short for Varjo. The app writes raw .h264 only; MP4 remux is

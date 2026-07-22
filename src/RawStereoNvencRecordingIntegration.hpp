@@ -94,7 +94,7 @@ public:
         config.baseFilename = base;
         config.frameRate = commandLineFrameRate();
         config.timestampSource = commandLineTimestampSource();
-        config.constantQp = 18;
+        config.constantQp = 23;
         config.maximumPendingGpuPairs = 32;
         // Keep the application shutdown path short and Varjo rendering responsive.
         // MP4 remux is intentionally left to an offline, user-side process.
