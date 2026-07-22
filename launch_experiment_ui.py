@@ -27,6 +27,7 @@ CONDITION_TO_POSTPROCESS = {
 
 BUTTONS = [
     ("warmup", "_warmup", "none"),
+    ("GoProCalib", "_GoProCalib", "none"),
     ("pre-test", "_pre-test", "none"),
     ("train1", "_train1", "selected"),
     ("train2", "_train2", "selected"),
