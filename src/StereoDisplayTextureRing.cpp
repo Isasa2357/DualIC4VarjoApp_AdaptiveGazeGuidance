@@ -11,7 +11,8 @@ namespace DualIC4Varjo {
 
 namespace {
 
-constexpr D3D12_RESOURCE_STATES kDisplayState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+constexpr D3D12_RESOURCE_STATES kDisplayState =
+    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
 void AddTransition(
     std::vector<D3D12_RESOURCE_BARRIER>& barriers,
@@ -20,8 +21,16 @@ void AddTransition(
     D3D12_RESOURCE_STATES after)
 {
     if (before != after) {
-        barriers.push_back(D3D12CoreLib::MakeTransitionBarrier(resource, before, after));
+        barriers.push_back(
+            D3D12CoreLib::MakeTransitionBarrier(resource, before, after));
     }
+}
+
+bool IncludesState(
+    D3D12_RESOURCE_STATES value,
+    D3D12_RESOURCE_STATES required) noexcept
+{
+    return (value & required) == required;
 }
 
 } // namespace
@@ -35,7 +44,8 @@ StereoDisplayTextureRing::StereoDisplayTextureRing(
     , requestedSlotCount_(std::max<std::size_t>(3, slotCount))
 {
     if (!core_) {
-        throw std::invalid_argument("StereoDisplayTextureRing requires D3D12Core");
+        throw std::invalid_argument(
+            "StereoDisplayTextureRing requires D3D12Core");
     }
 }
 
@@ -47,10 +57,15 @@ StereoDisplayTextureRing::~StereoDisplayTextureRing()
     }
 }
 
-bool StereoDisplayTextureRing::FormatKey::operator==(const FormatKey& other) const noexcept
+bool StereoDisplayTextureRing::FormatKey::operator==(
+    const FormatKey& other) const noexcept
 {
-    return leftWidth == other.leftWidth && leftHeight == other.leftHeight && leftFormat == other.leftFormat &&
-           rightWidth == other.rightWidth && rightHeight == other.rightHeight && rightFormat == other.rightFormat;
+    return leftWidth == other.leftWidth &&
+           leftHeight == other.leftHeight &&
+           leftFormat == other.leftFormat &&
+           rightWidth == other.rightWidth &&
+           rightHeight == other.rightHeight &&
+           rightFormat == other.rightFormat;
 }
 
 StereoDisplayTextureRing::FormatKey StereoDisplayTextureRing::makeFormatKey(
@@ -58,7 +73,8 @@ StereoDisplayTextureRing::FormatKey StereoDisplayTextureRing::makeFormatKey(
     const IC4Ext::D3D12CameraFrame& right)
 {
     if (!left.texture || !right.texture) {
-        throw std::runtime_error("Synchronized frame set contains a null D3D12 texture");
+        throw std::runtime_error(
+            "Synchronized frame set contains a null D3D12 texture");
     }
     const auto leftDesc = left.texture->GetDesc();
     const auto rightDesc = right.texture->GetDesc();
@@ -70,10 +86,14 @@ StereoDisplayTextureRing::FormatKey StereoDisplayTextureRing::makeFormatKey(
     FormatKey key;
     key.leftWidth = static_cast<UINT>(leftDesc.Width);
     key.leftHeight = leftDesc.Height;
-    key.leftFormat = left.dxgiFormat != DXGI_FORMAT_UNKNOWN ? left.dxgiFormat : leftDesc.Format;
+    key.leftFormat = left.dxgiFormat != DXGI_FORMAT_UNKNOWN
+        ? left.dxgiFormat
+        : leftDesc.Format;
     key.rightWidth = static_cast<UINT>(rightDesc.Width);
     key.rightHeight = rightDesc.Height;
-    key.rightFormat = right.dxgiFormat != DXGI_FORMAT_UNKNOWN ? right.dxgiFormat : rightDesc.Format;
+    key.rightFormat = right.dxgiFormat != DXGI_FORMAT_UNKNOWN
+        ? right.dxgiFormat
+        : rightDesc.Format;
     return key;
 }
 
@@ -86,12 +106,24 @@ void StereoDisplayTextureRing::rebuild(const FormatKey& format)
     for (auto& slot : slots_) {
         slot.commandContext = core_->CreateDirectContext();
         slot.leftResource = D3D12CoreLib::CreateTexture2D(
-            *core_, format.leftWidth, format.leftHeight, format.leftFormat, kDisplayState);
+            *core_,
+            format.leftWidth,
+            format.leftHeight,
+            format.leftFormat,
+            kDisplayState);
         slot.rightResource = D3D12CoreLib::CreateTexture2D(
-            *core_, format.rightWidth, format.rightHeight, format.rightFormat, kDisplayState);
+            *core_,
+            format.rightWidth,
+            format.rightHeight,
+            format.rightFormat,
+            kDisplayState);
 
-        slot.leftTexture = backend_.wrapResource(slot.leftResource.Get(), format.leftFormat);
-        slot.rightTexture = backend_.wrapResource(slot.rightResource.Get(), format.rightFormat);
+        slot.leftTexture = backend_.wrapResource(
+            slot.leftResource.Get(),
+            format.leftFormat);
+        slot.rightTexture = backend_.wrapResource(
+            slot.rightResource.Get(),
+            format.rightFormat);
     }
 
     format_ = format;
@@ -105,6 +137,12 @@ void StereoDisplayTextureRing::waitSlot(Slot& slot)
         core_->DirectQueue().WaitForFenceValue(slot.lastRenderFence);
         slot.lastRenderFence = 0;
     }
+
+    // The fence above covers both CopyResource and the subsequent Varjo render
+    // submission associated with this ring slot. Only now may the IC4Ext v2
+    // FramePool lease be released and the producer recycle those textures.
+    slot.leftSharedSourceKeepAlive = {};
+    slot.rightSharedSourceKeepAlive = {};
     slot.leftSourceKeepAlive.Reset();
     slot.rightSourceKeepAlive.Reset();
 }
@@ -114,10 +152,12 @@ StereoDisplayTextureRing::UploadResult StereoDisplayTextureRing::upload(
     const IC4Ext::D3D12CameraFrame& right)
 {
     if (left.ready.isValid() && !left.ready.wait()) {
-        throw std::runtime_error("Timed out waiting for the left camera GPU frame");
+        throw std::runtime_error(
+            "Timed out waiting for the left camera GPU frame");
     }
     if (right.ready.isValid() && !right.ready.wait()) {
-        throw std::runtime_error("Timed out waiting for the right camera GPU frame");
+        throw std::runtime_error(
+            "Timed out waiting for the right camera GPU frame");
     }
 
     const FormatKey key = makeFormatKey(left, right);
@@ -132,6 +172,27 @@ StereoDisplayTextureRing::UploadResult StereoDisplayTextureRing::upload(
 
     slot.leftSourceKeepAlive = left.texture;
     slot.rightSourceKeepAlive = right.texture;
+    slot.leftSharedSourceKeepAlive = left.sharedFrame;
+    slot.rightSharedSourceKeepAlive = right.sharedFrame;
+
+    // IC4Ext v2 publishes immutable FramePool textures in GENERIC_READ. That
+    // state already includes COPY_SOURCE and is intentionally shared by every
+    // consumer. Never transition a shared source resource, because doing so
+    // would race ImGui/recording/calibration readers of the same texture.
+    const bool leftAlreadyCopySource = IncludesState(
+        left.resourceState,
+        D3D12_RESOURCE_STATE_COPY_SOURCE);
+    const bool rightAlreadyCopySource = IncludesState(
+        right.resourceState,
+        D3D12_RESOURCE_STATE_COPY_SOURCE);
+    if (left.sharedFrame && !leftAlreadyCopySource) {
+        throw std::runtime_error(
+            "IC4Ext v2 left shared frame was not published COPY_SOURCE-readable");
+    }
+    if (right.sharedFrame && !rightAlreadyCopySource) {
+        throw std::runtime_error(
+            "IC4Ext v2 right shared frame was not published COPY_SOURCE-readable");
+    }
 
     auto& context = slot.commandContext;
     context.Reset();
@@ -139,38 +200,97 @@ StereoDisplayTextureRing::UploadResult StereoDisplayTextureRing::upload(
 
     std::vector<D3D12_RESOURCE_BARRIER> beforeCopy;
     beforeCopy.reserve(4);
-    AddTransition(beforeCopy, left.texture.Get(), left.resourceState, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    AddTransition(beforeCopy, right.texture.Get(), right.resourceState, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    AddTransition(beforeCopy, slot.leftResource.Get(), slot.leftResource.GetState(), D3D12_RESOURCE_STATE_COPY_DEST);
-    AddTransition(beforeCopy, slot.rightResource.Get(), slot.rightResource.GetState(), D3D12_RESOURCE_STATE_COPY_DEST);
-    context.ResourceBarrier(static_cast<UINT>(beforeCopy.size()), beforeCopy.data());
+    if (!left.sharedFrame) {
+        AddTransition(
+            beforeCopy,
+            left.texture.Get(),
+            left.resourceState,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+    }
+    if (!right.sharedFrame) {
+        AddTransition(
+            beforeCopy,
+            right.texture.Get(),
+            right.resourceState,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+    }
+    AddTransition(
+        beforeCopy,
+        slot.leftResource.Get(),
+        slot.leftResource.GetState(),
+        D3D12_RESOURCE_STATE_COPY_DEST);
+    AddTransition(
+        beforeCopy,
+        slot.rightResource.Get(),
+        slot.rightResource.GetState(),
+        D3D12_RESOURCE_STATE_COPY_DEST);
+    if (!beforeCopy.empty()) {
+        context.ResourceBarrier(
+            static_cast<UINT>(beforeCopy.size()),
+            beforeCopy.data());
+    }
 
-    commandList->CopyResource(slot.leftResource.Get(), left.texture.Get());
-    commandList->CopyResource(slot.rightResource.Get(), right.texture.Get());
+    commandList->CopyResource(
+        slot.leftResource.Get(),
+        left.texture.Get());
+    commandList->CopyResource(
+        slot.rightResource.Get(),
+        right.texture.Get());
 
     std::vector<D3D12_RESOURCE_BARRIER> afterCopy;
     afterCopy.reserve(4);
-    AddTransition(afterCopy, left.texture.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, left.resourceState);
-    AddTransition(afterCopy, right.texture.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, right.resourceState);
-    AddTransition(afterCopy, slot.leftResource.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kDisplayState);
-    AddTransition(afterCopy, slot.rightResource.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kDisplayState);
-    context.ResourceBarrier(static_cast<UINT>(afterCopy.size()), afterCopy.data());
+    if (!left.sharedFrame) {
+        AddTransition(
+            afterCopy,
+            left.texture.Get(),
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+            left.resourceState);
+    }
+    if (!right.sharedFrame) {
+        AddTransition(
+            afterCopy,
+            right.texture.Get(),
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+            right.resourceState);
+    }
+    AddTransition(
+        afterCopy,
+        slot.leftResource.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        kDisplayState);
+    AddTransition(
+        afterCopy,
+        slot.rightResource.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        kDisplayState);
+    if (!afterCopy.empty()) {
+        context.ResourceBarrier(
+            static_cast<UINT>(afterCopy.size()),
+            afterCopy.data());
+    }
 
     context.Close();
     ID3D12CommandList* lists[] = {context.GetCommandList()};
     core_->DirectQueue().ExecuteCommandLists(1, lists);
-    // Keep the camera resources alive even if rendering fails before markRendered().
+
+    // Keep the shared camera frames leased even if rendering fails before
+    // markRendered(). markRendered() advances this fence to include Varjo's
+    // sampling of the copied display textures.
     slot.lastRenderFence = core_->DirectQueue().Signal();
     slot.leftResource.SetState(kDisplayState);
     slot.rightResource.SetState(kDisplayState);
 
-    return UploadResult{slot.leftTexture, slot.rightTexture, slotIndex};
+    return UploadResult{
+        slot.leftTexture,
+        slot.rightTexture,
+        slotIndex};
 }
 
 void StereoDisplayTextureRing::markRendered(std::size_t slotIndex)
 {
     if (slotIndex >= slots_.size()) {
-        throw std::out_of_range("Display texture slot index is invalid");
+        throw std::out_of_range(
+            "Display texture slot index is invalid");
     }
     slots_[slotIndex].lastRenderFence = core_->DirectQueue().Signal();
 }
@@ -178,11 +298,11 @@ void StereoDisplayTextureRing::markRendered(std::size_t slotIndex)
 void StereoDisplayTextureRing::waitIdle()
 {
     if (!core_) return;
-    // Wait before releasing source keep-alive references. This also covers an
-    // exception between copy submission and markRendered().
     core_->DirectQueue().WaitIdle();
     for (auto& slot : slots_) {
         slot.lastRenderFence = 0;
+        slot.leftSharedSourceKeepAlive = {};
+        slot.rightSharedSourceKeepAlive = {};
         slot.leftSourceKeepAlive.Reset();
         slot.rightSourceKeepAlive.Reset();
     }
