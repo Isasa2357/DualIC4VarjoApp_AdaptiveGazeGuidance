@@ -1,6 +1,6 @@
 #pragma once
 
-#include <IC4Ext/IC4Ext.hpp>
+#include "IC4ExtV2SharedPipeline.hpp"
 
 #include <D3D12Helper/D3D12Core/D3D12Core.hpp>
 
