@@ -1,8 +1,7 @@
 #pragma once
 
 #include "StereoCalibrationSupport.hpp"
-
-#include <IC4Ext/IC4Ext.hpp>
+#include "IC4ExtV2SharedPipeline.hpp"
 
 #include <cstddef>
 #include <cstdint>
