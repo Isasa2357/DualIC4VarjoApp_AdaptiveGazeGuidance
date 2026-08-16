@@ -1,6 +1,6 @@
 #pragma once
 
-#include <IC4Ext/IC4Ext.hpp>
+#include "IC4ExtV2SharedPipeline.hpp"
 #include <VarjoXR/Backends/D3D12/D3D12Backend.hpp>
 
 #include <D3D12Helper/D3D12Core/D3D12CommandContext.hpp>
@@ -31,7 +31,9 @@ public:
     StereoDisplayTextureRing(const StereoDisplayTextureRing&) = delete;
     StereoDisplayTextureRing& operator=(const StereoDisplayTextureRing&) = delete;
 
-    UploadResult upload(const IC4Ext::D3D12CameraFrame& left, const IC4Ext::D3D12CameraFrame& right);
+    UploadResult upload(
+        const IC4Ext::D3D12CameraFrame& left,
+        const IC4Ext::D3D12CameraFrame& right);
     void markRendered(std::size_t slotIndex);
     void waitIdle();
 
@@ -45,7 +47,10 @@ private:
         DXGI_FORMAT rightFormat = DXGI_FORMAT_UNKNOWN;
 
         bool operator==(const FormatKey& other) const noexcept;
-        bool operator!=(const FormatKey& other) const noexcept { return !(*this == other); }
+        bool operator!=(const FormatKey& other) const noexcept
+        {
+            return !(*this == other);
+        }
     };
 
     struct Slot {
@@ -54,12 +59,20 @@ private:
         D3D12CoreLib::D3D12Resource rightResource;
         std::shared_ptr<VarjoXR::Backends::D3D12::D3D12Texture> leftTexture;
         std::shared_ptr<VarjoXR::Backends::D3D12::D3D12Texture> rightTexture;
+
+        // ComPtr keeps the D3D12 object itself alive. The ReadOnlyFrame handles
+        // additionally keep the IC4Ext v2 FramePool lease alive until this
+        // slot's copy fence has completed, preventing producer-side reuse.
         Microsoft::WRL::ComPtr<ID3D12Resource> leftSourceKeepAlive;
         Microsoft::WRL::ComPtr<ID3D12Resource> rightSourceKeepAlive;
+        IC4Ext::D3D12::ReadOnlyFrame leftSharedSourceKeepAlive;
+        IC4Ext::D3D12::ReadOnlyFrame rightSharedSourceKeepAlive;
         std::uint64_t lastRenderFence = 0;
     };
 
-    static FormatKey makeFormatKey(const IC4Ext::D3D12CameraFrame& left, const IC4Ext::D3D12CameraFrame& right);
+    static FormatKey makeFormatKey(
+        const IC4Ext::D3D12CameraFrame& left,
+        const IC4Ext::D3D12CameraFrame& right);
     void rebuild(const FormatKey& format);
     void waitSlot(Slot& slot);
 
