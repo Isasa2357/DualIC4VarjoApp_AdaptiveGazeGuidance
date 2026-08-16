@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -167,36 +168,38 @@ public:
 
     std::optional<AppSharedD3D12SyncedFrameSet> tryPopLatest()
     {
-        return Convert(nativeQueue_->tryPopLatest());
+        return convertAndRetain(nativeQueue_->tryPopLatest());
     }
 
     std::optional<AppSharedD3D12SyncedFrameSet> tryPop()
     {
-        return Convert(nativeQueue_->tryPop());
+        return convertAndRetain(nativeQueue_->tryPop());
     }
 
     std::optional<AppSharedD3D12SyncedFrameSet> waitPop()
     {
-        return Convert(nativeQueue_->waitPop());
+        return convertAndRetain(nativeQueue_->waitPop());
     }
 
     template <class Rep, class Period>
     std::optional<AppSharedD3D12SyncedFrameSet> waitPopFor(
         const std::chrono::duration<Rep, Period>& timeout)
     {
-        return Convert(nativeQueue_->waitPopFor(timeout));
+        return convertAndRetain(nativeQueue_->waitPopFor(timeout));
     }
 
     template <class Rep, class Period>
     std::optional<AppSharedD3D12SyncedFrameSet> waitPopLatestFor(
         const std::chrono::duration<Rep, Period>& timeout)
     {
-        return Convert(nativeQueue_->waitPopLatestFor(timeout));
+        return convertAndRetain(nativeQueue_->waitPopLatestFor(timeout));
     }
 
     void clear()
     {
         if (nativeQueue_) nativeQueue_->clear();
+        std::lock_guard<std::mutex> lock(retainedMutex_);
+        retainedSets_.clear();
     }
 
     void close()
@@ -211,14 +214,34 @@ public:
     }
 
 private:
-    static std::optional<AppSharedD3D12SyncedFrameSet> Convert(
+    // ImGui uses a two-buffer swap chain and intentionally stores only ComPtr
+    // handles to the current camera resources. A ComPtr keeps the D3D12 object
+    // alive but does not keep IC4Ext's producer-side FramePool lease alive. Keep
+    // three recently popped synchronized sets per logical output so asynchronous
+    // consumers cannot see a resource recycled while one of two GPU frames is
+    // still in flight. Other consumers already hold a ReadOnlyFrame(Set) for
+    // their exact work duration; this small history is a bounded extra guard.
+    static constexpr std::size_t kRetainedPoppedSets = 3;
+
+    std::optional<AppSharedD3D12SyncedFrameSet> convertAndRetain(
         std::optional<D3D12::ReadOnlyFrameSet> source)
     {
         if (!source) return std::nullopt;
-        return AppSharedD3D12SyncedFrameSet::FromNative(*source);
+
+        auto converted = AppSharedD3D12SyncedFrameSet::FromNative(*source);
+        {
+            std::lock_guard<std::mutex> lock(retainedMutex_);
+            retainedSets_.push_back(*source);
+            while (retainedSets_.size() > kRetainedPoppedSets) {
+                retainedSets_.pop_front();
+            }
+        }
+        return converted;
     }
 
     std::shared_ptr<D3D12::ReadOnlyFrameSetQueue> nativeQueue_;
+    mutable std::mutex retainedMutex_;
+    std::deque<D3D12::ReadOnlyFrameSet> retainedSets_;
 };
 
 namespace AppV2Bridge {
@@ -462,7 +485,9 @@ private:
         ingress_ = logicalInput->nativeQueue();
         syncConfig_ = config;
         legacyOptions_ = options;
-        syncThread_ = std::make_unique<D3D12::FrameSyncThread>(ingress_, syncConfig_);
+        syncThread_ = std::make_unique<D3D12::FrameSyncThread>(
+            ingress_,
+            syncConfig_);
         return true;
     }
 
