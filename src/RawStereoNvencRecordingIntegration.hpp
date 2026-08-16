@@ -1,10 +1,9 @@
 #pragma once
 
+#include "IC4ExtV2SharedPipeline.hpp"
 #include "RawStereoNvencRecorder.hpp"
 #include "RenderedFrameMetadataLogger.hpp"
 #include "StereoDisplayTextureRing.hpp"
-
-#include <IC4Ext/IC4Ext.hpp>
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -73,7 +72,7 @@ public:
         }
         if (!additionalSyncOutput_) {
             lastError_ =
-                "raw recorder could not find the post-calibration third SyncThread";
+                "raw recorder could not find the post-calibration shared sync output";
             return false;
         }
 
@@ -96,8 +95,6 @@ public:
         config.timestampSource = commandLineTimestampSource();
         config.constantQp = 23;
         config.maximumPendingGpuPairs = 32;
-        // Keep the application shutdown path short and Varjo rendering responsive.
-        // MP4 remux is intentionally left to an offline, user-side process.
         config.remuxToMp4 = false;
 
         recorder_ = std::make_unique<RawStereoNvencRecorder>(std::move(config));
@@ -212,10 +209,10 @@ private:
 
     void updateAdditionalSyncLocked()
     {
-        // The first two active SyncThreads are always Varjo and ImGui. During
+        // The first two logical outputs are always Varjo and ImGui. During
         // calibration the third is temporary and is removed before recording
         // starts. At RenderedFrameMetadataLogger::start(), the active third
-        // thread is therefore the post-calibration raw-recording pipeline.
+        // output is therefore the post-calibration raw-recording path.
         additionalSyncOutput_ = activeSyncs_.size() > 2
             ? activeSyncs_.back().output
             : nullptr;
@@ -298,17 +295,17 @@ private:
 
 namespace IC4Ext {
 
+// Retains the old application-facing lifecycle while each instance is only an
+// output registration on the single central IC4Ext v2 FrameSyncThread.
 class RecordingD3D12FrameSyncThread final {
 public:
     RecordingD3D12FrameSyncThread(
         std::shared_ptr<D3D12IndexedFrameQueue> inputQueue,
         std::shared_ptr<D3D12SyncedFrameQueue> outputQueue,
         FrameSyncOptions options = {})
-        : outputQueue_(outputQueue)
-        , inner_(
-              std::move(inputQueue),
-              std::move(outputQueue),
-              std::move(options))
+        : inputQueue_(std::move(inputQueue))
+        , outputQueue_(std::move(outputQueue))
+        , options_(std::move(options))
     {
     }
 
@@ -322,7 +319,12 @@ public:
     bool start()
     {
         if (started_) return true;
-        if (!inner_.start()) return false;
+        lastError_ = NoError();
+        outputId_ = AppV2Bridge::SharedReadOnlyPipelineCoordinator::instance()
+            .registerOutput(outputQueue_, inputQueue_, options_, lastError_);
+        if (outputId_ == D3D12::InvalidFrameSyncOutputId) {
+            return false;
+        }
         started_ = true;
         DualIC4Varjo::RawStereoRecordingManager::instance().registerSync(
             this,
@@ -330,33 +332,51 @@ public:
         return true;
     }
 
-    void requestStop() { inner_.requestStop(); }
+    void requestStop()
+    {
+        unregister();
+    }
 
     void join()
     {
-        inner_.join();
         unregister();
     }
 
     void stopAndJoin()
     {
-        inner_.stopAndJoin();
         unregister();
     }
 
-    FrameSyncStats stats() const { return inner_.stats(); }
-    const ErrorInfo& lastError() const noexcept { return inner_.lastError(); }
+    FrameSyncStats stats() const
+    {
+        if (started_) {
+            return AppV2Bridge::SharedReadOnlyPipelineCoordinator::instance()
+                .legacyStats(outputId_);
+        }
+        return finalStats_;
+    }
+
+    const ErrorInfo& lastError() const noexcept { return lastError_; }
 
 private:
     void unregister()
     {
         if (!started_) return;
+        finalStats_ = AppV2Bridge::SharedReadOnlyPipelineCoordinator::instance()
+            .legacyStats(outputId_);
         DualIC4Varjo::RawStereoRecordingManager::instance().unregisterSync(this);
+        AppV2Bridge::SharedReadOnlyPipelineCoordinator::instance()
+            .retireOutput(outputId_);
+        outputId_ = D3D12::InvalidFrameSyncOutputId;
         started_ = false;
     }
 
+    std::shared_ptr<D3D12IndexedFrameQueue> inputQueue_;
     std::shared_ptr<D3D12SyncedFrameQueue> outputQueue_;
-    D3D12FrameSyncThread inner_;
+    FrameSyncOptions options_{};
+    D3D12::FrameSyncOutputId outputId_ = D3D12::InvalidFrameSyncOutputId;
+    FrameSyncStats finalStats_{};
+    ErrorInfo lastError_{};
     bool started_ = false;
 };
 
