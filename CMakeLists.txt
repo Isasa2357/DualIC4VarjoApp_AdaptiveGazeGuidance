@@ -65,8 +65,11 @@ include(FetchContent)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL
     "Do not update populated dependencies automatically" FORCE)
 
+# Latest IC4Ext main checked 2026-08-16. This is the v2.0.0 shared ReadOnly
+# pipeline: one camera ingress, one central FrameSyncThread, and reference-only
+# fan-out to consumer queues.
 set(DUAL_IC4_VARJO_IC4EXT_TAG
-    "410d8964c243c5c8859d958229f788b8a4a11a6f")
+    "abb4488eeb63a06464a5859e1d488092f7e71789")
 set(DUAL_IC4_VARJO_VARJOXR_TAG
     "3d28a950b54edeafa3e7b595b78cc3b47cdc2ef5")
 set(DUAL_IC4_VARJO_VARJOTOOLKIT_TAG
@@ -150,7 +153,7 @@ if(NOT EXISTS "${_dual_ic4_resolved_sdk_root}/lib/x64/ic4core.lib")
 endif()
 
 set(IC4_SDK_ROOT "${_dual_ic4_resolved_sdk_root}"
-    CACHE PATH "Path to the IC Imaging Control 4 SDK root" FORCE)
+    CACHE PATH "Path to IC Imaging Control 4 SDK root" FORCE)
 message(STATUS "DualIC4VarjoApp: IC4 SDK root = ${IC4_SDK_ROOT}")
 
 if(VARJOXR_VARJO_SDK_ROOT)
@@ -301,6 +304,7 @@ add_executable(DualIC4VarjoApp
     src/FadeOutPostProcessIntegration.hpp
     src/GazeOnCameraFrameService.cpp
     src/GazeOnCameraFrameService.hpp
+    src/IC4ExtV2SharedPipeline.hpp
     src/ImGuiStereoPreviewGazeOverlay.cpp
     src/ImGuiStereoPreview.hpp
     src/ImuLoadServiceHook.cpp
