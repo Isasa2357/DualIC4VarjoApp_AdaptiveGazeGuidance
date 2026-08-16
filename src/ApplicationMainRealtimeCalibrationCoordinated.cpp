@@ -37,12 +37,19 @@
 #undef NOMINMAX
 
 // Replace only application-level implementation classes in this translation
-// unit. Keep D3D12SyncedFrameQueue unchanged so existing functions such as
-// ImGuiStereoPreview and RunCheckerboardStereoCalibration keep their ABI.
+// unit. D3D12* frame/queue type tokens have already been redirected by
+// IC4ExtV2SharedPipeline.hpp to immutable shared-frame compatibility handles.
 #define D3D12CameraCaptureThread CoordinatedD3D12CameraCaptureThread
 #define D3D12FrameSyncThread RecordingD3D12FrameSyncThread
 #define StereoDisplayTextureRing RecordingStereoDisplayTextureRing
 #define RenderedFrameMetadataLogger FadeOutRenderedFrameMetadataLogger
+
+// IC4Ext v2 removed the copied-output stride/burst members because camera
+// capture no longer fans out by making GPU copies. The included legacy main
+// still assigns 1 to those fields. Redirect just those two member tokens to the
+// retained compatibility flag; the v2 coordinated wrapper ignores that flag.
+#define copiedOutputFrameStride copyPerOutputQueue
+#define copiedOutputFrameBurst copyPerOutputQueue
 
 // Register our console handler instead of the legacy handler that directly sets
 // gStopRequested. Ctrl+C now publishes an application-exit request; the normal
@@ -103,6 +110,8 @@
 #undef createPlane
 #undef GetAsyncKeyState
 #undef SetConsoleCtrlHandler
+#undef copiedOutputFrameBurst
+#undef copiedOutputFrameStride
 #undef RenderedFrameMetadataLogger
 #undef StereoDisplayTextureRing
 #undef D3D12FrameSyncThread
