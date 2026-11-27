@@ -40,6 +40,7 @@ enum class StereoPostProcessMode : std::uint32_t {
     Darken = 1,
     Blur = 2,
     BlurWave = 3,
+    OutsideBlur = 4,
 };
 
 struct StereoPostProcessSettings {

@@ -25,6 +25,8 @@ CONDITION_TO_POSTPROCESS = {
     # shown to the user is "highlight".
     "highlight": "darken",
     "blur-wave": "blur-wave",
+    "blur-left": "blur-left",
+    "blur-right": "blur-right",
 }
 
 BUTTONS = [

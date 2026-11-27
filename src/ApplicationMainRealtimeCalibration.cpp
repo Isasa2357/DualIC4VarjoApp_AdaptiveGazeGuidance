@@ -3,6 +3,7 @@
 #include "EyeTrackerLoadServiceHook.hpp"
 #include "GazeOnCameraFrameService.hpp"
 #include "BlurWaveGaze.hpp"
+#include "CalibrationRuntimeBridge.hpp"
 #include "ImuLoadServiceHook.hpp"
 #include "KeyInputService.hpp"
 #include "TimestampLoadService.hpp"
@@ -426,6 +427,8 @@ int main(int argc, char** argv)
         std::uint64_t renderRowIndex = 0;
         const auto renderStart = std::chrono::steady_clock::now();
 
+        const bool monocularBlur = CalibrationRuntimeBridge::GetPostProcessRuntimeConfig().settings.mode ==
+                                   StereoPostProcessMode::OutsideBlur;
         BlurWaveGaze blurWaveGaze;
         std::thread renderThread([&]() noexcept {
             BlurWaveAnimation blurWaveAnimation;
@@ -492,6 +495,10 @@ int main(int argc, char** argv)
                         space.frameContext().frameNumber =
                             static_cast<std::int64_t>(renderRowIndex + 1u);
 
+                        if (monocularBlur) {
+                            const auto filter = CalibrationRuntimeBridge::GetPostProcessRuntimeConfig();
+                            UpdatePlanePostProcessState(plane, filter.settings, 0.f);
+                        }
                         std::optional<glm::vec2> gazeUv;
                         if (PlaneUsesBlurWave(plane)) {
                             gazeUv = blurWaveGaze.planeUv(plane, d3dBackend.frameInfoSnapshot());

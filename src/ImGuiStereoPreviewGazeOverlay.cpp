@@ -609,14 +609,16 @@ void DrawPostProcessPanel()
 
     ImGui::TextUnformatted("Postprocess");
     ImGui::SameLine(0.0f, 14.0f);
-    ImGui::TextDisabled("mode from --postprocess: %s", CalibrationRuntimeBridge::PostProcessModeName(settings.mode));
+    ImGui::TextDisabled("mode from --postprocess: %s", CalibrationRuntimeBridge::PostProcessModeName(settings));
     ImGui::Separator();
     ImGui::Spacing();
 
-    bool apply = settings.enabled && settings.hasFilter();
-    if (ImGui::Checkbox("Apply command-line postprocess", &apply)) {
-        settings.enabled = apply && settings.hasFilter();
-        changed = true;
+    if (settings.mode != StereoPostProcessMode::OutsideBlur) {
+        bool apply = settings.enabled && settings.hasFilter();
+        if (ImGui::Checkbox("Apply command-line postprocess", &apply)) {
+            settings.enabled = apply && settings.hasFilter();
+            changed = true;
+        }
     }
 
     bool debugDot = GuiControlBridge::PostProcessDebugCenterDotVisible();

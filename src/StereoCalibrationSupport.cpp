@@ -155,6 +155,7 @@ float ModeToFloat(StereoPostProcessMode mode) noexcept
     case StereoPostProcessMode::Darken: return 1.0f;
     case StereoPostProcessMode::Blur: return 2.0f;
     case StereoPostProcessMode::BlurWave: return 3.0f;
+    case StereoPostProcessMode::OutsideBlur: return 4.0f;
     case StereoPostProcessMode::None:
     default:
         return 0.0f;
@@ -285,7 +286,7 @@ float4 SampleRemappedOutputPixel(float2 destinationPixel)
 const char* PlanePostProcessPixelShaderHlsl() noexcept
 {
     return R"hlsl(
-float OutsideMaskForUv(float2 uv, float2 textureSize)
+float OutsideMaskForUv(float2 uv, float2 textureSize, bool protectInterior)
 {
     const float shortAxis = max(1.0f, min(textureSize.x, textureSize.y));
     const float2 center01 = params0.xy;
@@ -294,7 +295,7 @@ float OutsideMaskForUv(float2 uv, float2 textureSize)
     const float ellipseDistance = length(deltaShortAxis / radii);
     const float maxRadius = max(max(radii.x, radii.y), 1.0e-5f);
     const float softness = max(1.0e-5f, params1.y / maxRadius);
-    return smoothstep(1.0f - softness, 1.0f + softness, ellipseDistance);
+    return smoothstep(protectInterior ? 1.0f : 1.0f - softness, 1.0f + softness, ellipseDistance);
 }
 
 float4 Blur9Rectified(float2 uv, float2 textureSize)
@@ -330,11 +331,11 @@ float4 main(float2 uv : TEXCOORD0) : SV_TARGET
         return color * tint;
     }
 
-    const float outsideMask = OutsideMaskForUv(uv, textureSize);
+    const float outsideMask = OutsideMaskForUv(uv, textureSize, mode == 4);
     if (mode == 1) {
         const float outsideBrightness = saturate(params1.x);
         color.rgb *= lerp(1.0f, outsideBrightness, outsideMask);
-    } else if (mode == 2) {
+    } else if (mode == 2 || mode == 4) {
         const float blurStrength = saturate((encodedMode - floor(encodedMode)) * 10.0f);
         const float blurAmount = outsideMask * blurStrength;
         if (blurAmount > 1.0e-5f) {
@@ -376,7 +377,7 @@ VarjoXR::TextureProcessingDesc MakeProcessing(
 void ApplyMaterialPostProcessParams(
     VarjoXR::XRPlane& plane,
     VarjoXR::Eye eye,
-    StereoPostProcessSettings settings) noexcept
+    StereoPostProcessSettings settings)
 {
     settings.mode = settings.modeForEye(eye);
     settings = SanitizePostProcessSettings(settings);
@@ -385,6 +386,10 @@ void ApplyMaterialPostProcessParams(
         mode > 0.0f ? mode + std::clamp(settings.blurStrength01, 0.0f, 1.0f) * 0.1f : 0.0f;
 
     auto& material = plane.material(eye);
+    if (settings.mode == StereoPostProcessMode::OutsideBlur && material.planePixelShaderHlsl.empty()) {
+        // Raw camera display has no calibration pass to install the Plane shader.
+        plane.setPixelShaderHLSL(eye, PlanePostProcessPixelShaderHlsl());
+    }
     material.params0 = {
         settings.centerX01,
         settings.centerY01,
@@ -604,6 +609,7 @@ void UpdatePlanePostProcessReveal(
         case StereoPostProcessMode::BlurWave:
             animated.blurStrength01 *= 1.0f - reveal;
             break;
+        case StereoPostProcessMode::OutsideBlur:
         case StereoPostProcessMode::None:
             break;
         }

@@ -117,6 +117,9 @@ inline void PrintPlaneState(
 
 inline void ApplyPostProcessWithGuiTransition(VarjoXR::XRPlane& plane)
 {
+    const auto config = CalibrationRuntimeBridge::GetPostProcessRuntimeConfig();
+    if (config.settings.mode == StereoPostProcessMode::OutsideBlur) return;
+
     using Clock = std::chrono::steady_clock;
 
     // Keep the existing keyboard reveal path active. GUI check/uncheck only
@@ -133,7 +136,6 @@ inline void ApplyPostProcessWithGuiTransition(VarjoXR::XRPlane& plane)
     static thread_local CalibrationRuntimeBridge::PlanePostProcessRuntimeConfig transitionConfig{};
     static thread_local CalibrationRuntimeBridge::PlanePostProcessRuntimeConfig lastActiveConfig{};
 
-    const auto config = CalibrationRuntimeBridge::GetPostProcessRuntimeConfig();
     const bool desiredApply =
         config.settings.enabled && config.settings.hasFilter();
     const auto now = Clock::now();

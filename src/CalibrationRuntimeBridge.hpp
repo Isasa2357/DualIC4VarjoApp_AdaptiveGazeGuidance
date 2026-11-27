@@ -51,9 +51,12 @@ struct PlanePostProcessRuntimeConfig {
     int revealVirtualKey = VK_F23;
 };
 
-inline const char* PostProcessModeName(StereoPostProcessMode mode) noexcept
+inline const char* PostProcessModeName(const StereoPostProcessSettings& settings) noexcept
 {
-    switch (mode) {
+    switch (settings.mode) {
+    case StereoPostProcessMode::OutsideBlur:
+        return settings.modeForEye(VarjoXR::Eye::Left) == StereoPostProcessMode::OutsideBlur
+            ? "blur-left" : "blur-right";
     case StereoPostProcessMode::Darken: return "darken";
     case StereoPostProcessMode::Blur: return "blur";
     case StereoPostProcessMode::BlurWave: return "blur-wave";
@@ -121,6 +124,17 @@ inline bool ApplyCommandLinePostProcessMode(
         config.settings = MakeDarkenPostProcessSettings();
         return true;
     }
+    if (value == L"blur-left" || value == L"blur-right") {
+        config.settings = StereoPostProcessSettings{};
+        config.settings.mode = StereoPostProcessMode::OutsideBlur;
+        config.settings.enabled = true;
+        config.settings.edgeSoftnessShortAxis01 = 0.015f;
+        VarjoXR::EyeArray<StereoPostProcessMode> modes{};
+        const auto eye = value == L"blur-left" ? VarjoXR::Eye::Left : VarjoXR::Eye::Right;
+        modes[VarjoXR::EyeIndex(eye)] = StereoPostProcessMode::OutsideBlur;
+        config.settings.eyeModes = modes;
+        return true;
+    }
     if (value == L"blur-wave") {
         config.settings = MakeBlurPostProcessSettings();
         config.settings.mode = StereoPostProcessMode::BlurWave;
@@ -166,17 +180,19 @@ inline PlanePostProcessRuntimeConfig MakeInitialPostProcessRuntimeConfig()
 
     if (!optionFound) {
         std::cout
-            << "[POSTPROCESS] mode=none (use --postprocess darken, blur or blur-wave to enable)\n";
+            << "[POSTPROCESS] mode=none (use --postprocess to select a filter)\n";
     } else if (!optionValid) {
         config.settings = StereoPostProcessSettings{};
         config.settings.mode = StereoPostProcessMode::None;
         config.settings.enabled = false;
         std::cout
             << "[POSTPROCESS] invalid --postprocess value; postprocess disabled\n";
+    } else if (config.settings.mode == StereoPostProcessMode::OutsideBlur) {
+        std::cout << "[POSTPROCESS] mode=" << PostProcessModeName(config.settings) << " (fixed at startup)\n";
     } else {
         std::cout
             << "[POSTPROCESS] mode="
-            << PostProcessModeName(config.settings.mode)
+            << PostProcessModeName(config.settings)
             << ", reveal_key=F23, open=" << config.revealOpenSeconds
             << "s, hold=" << config.revealHoldSeconds
             << "s, close=" << config.revealCloseSeconds << "s\n";
@@ -439,7 +455,7 @@ inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
         pulseStart = now;
         std::cout
             << "[POSTPROCESS] "
-            << PostProcessModeName(config.settings.mode)
+            << PostProcessModeName(config.settings)
             << " reveal pulse started by " << revealKeyName << ": "
             << "open=" << config.revealOpenSeconds
             << "s, hold=" << config.revealHoldSeconds
@@ -624,10 +640,12 @@ inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
         << "[CALIB] controls: Q=finish, R=clear observations, Esc=abort\n"
         << "[CALIB] move plane: arrows; resize/distance: Shift+arrows\n"
         << "[CALIB] hide/show Varjo plane: O\n";
-    if (config.settings.enabled && config.settings.hasFilter()) {
+    if (config.settings.mode == StereoPostProcessMode::OutsideBlur) {
+        std::cout << "[CALIB] active postprocess: " << PostProcessModeName(config.settings) << "\n";
+    } else if (config.settings.enabled && config.settings.hasFilter()) {
         std::cout
             << "[CALIB] reveal "
-            << PostProcessModeName(config.settings.mode)
+            << PostProcessModeName(config.settings)
             << " postprocess: "
             << RevealVirtualKeyName(config.revealVirtualKey) << "\n";
     } else {

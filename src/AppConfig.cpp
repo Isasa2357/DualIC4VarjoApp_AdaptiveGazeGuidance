@@ -72,7 +72,7 @@ bool ParsePostProcessMode(
         normalized = "none";
         return true;
     }
-    if (value == "darken" || value == "blur-wave") {
+    if (value == "darken" || value == "blur-wave" || value == "blur-left" || value == "blur-right") {
         normalized = value;
         return true;
     }
@@ -306,7 +306,7 @@ bool ParseArguments(
             }
         } else if (option == "--postprocess") {
             if (!ParsePostProcessMode(value, config.postProcessMode)) {
-                error = "--postprocess must be none, darken, blur, blur-wave, or blue";
+                error = "--postprocess must be none, darken, blur, blur-wave, blur-left, blur-right, or blue";
                 return false;
             }
         } else if (option == "--pc-preview") {
@@ -443,7 +443,7 @@ void PrintUsage(std::ostream& out)
         "  --plane-width-m N --plane-height-m N\n"
         "  --plane-x-m N --plane-y-m N --plane-distance-m N\n"
         "  --display-ring-size N\n"
-        "  --postprocess none|darken|blur|blur-wave   Default: none; blue is accepted as blur alias\n"
+        "  --postprocess none|darken|blur|blur-wave|blur-left|blur-right   Default: none; blue is accepted as blur alias\n"
         "  --name NAME                      Personalization profile in personalization/NAME.json; default DEFAULT\n\n"
         "PC ImGui preview:\n"
         "  --pc-preview 0|1                 Default: 1\n"
