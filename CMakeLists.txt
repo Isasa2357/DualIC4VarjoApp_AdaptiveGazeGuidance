@@ -333,7 +333,11 @@ add_executable(DualIC4VarjoApp
     src/VstLoadServiceHook.hpp)
 
 target_compile_features(DualIC4VarjoApp PRIVATE cxx_std_17)
-target_include_directories(DualIC4VarjoApp PRIVATE ${OpenCV_INCLUDE_DIRS})
+# VarjoVideoPostProcessShader.hpp includes the experimental SDK headers, but
+# the pinned VarjoToolkit only adds their directory to its own compilation.
+target_include_directories(DualIC4VarjoApp PRIVATE
+    ${OpenCV_INCLUDE_DIRS}
+    "${VARJO_EXPERIMENTAL_INCLUDE_DIR}")
 target_link_libraries(DualIC4VarjoApp PRIVATE
     IC4Ext::IC4Ext
     VarjoXR::VarjoXR
