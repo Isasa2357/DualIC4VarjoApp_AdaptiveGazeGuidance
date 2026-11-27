@@ -39,6 +39,7 @@ enum class StereoPostProcessMode : std::uint32_t {
     None = 0,
     Darken = 1,
     Blur = 2,
+    BlurWave = 3,
 };
 
 struct StereoPostProcessSettings {
@@ -126,6 +127,19 @@ void UpdatePlanePostProcessReveal(
     const StereoPostProcessSettings& settings,
     float revealAmount01,
     float expandedRadiusShortAxis01);
+
+// Advance the inward rings once per submitted frame on the render thread.
+struct BlurWaveAnimation {
+    VarjoXR::EyeArray<double> phaseRadians{};
+    VarjoXR::EyeArray<bool> active{};
+};
+
+bool PlaneUsesBlurWave(const VarjoXR::XRPlane& plane) noexcept;
+void UpdateBlurWaveFrame(
+    VarjoXR::XRPlane& plane,
+    BlurWaveAnimation& animation,
+    const std::optional<glm::vec2>& gazeUv,
+    double elapsedSeconds);
 
 void UpdatePlaneAspectFromCalibration(
     VarjoXR::XRPlane& plane,

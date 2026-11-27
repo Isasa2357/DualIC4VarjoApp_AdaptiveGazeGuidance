@@ -1,4 +1,5 @@
 #include "StereoCalibrationSupport.hpp"
+#include "BlurWaveShader.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -116,6 +117,14 @@ void ValidateDocument(const StereoCalibrationDocument& document)
     }
 }
 
+// Matches the trailing fields of the rectification shader cbuffer.
+struct alignas(16) BlurWaveConstants {
+    std::array<float, 4> roiPixels{}; // center X/Y, ellipse radii X/Y
+    std::array<float, 4> rings{};     // three radii in pixels, Gaussian kernel radius
+    std::array<float, 4> blend{};     // overall strength, remaining components reserved
+    std::array<float, 40> weights{};  // normalized half-kernel, packed as float4[10]
+};
+
 struct alignas(16) RectificationConstants {
     std::array<float, 4> inverseRow0{};
     std::array<float, 4> inverseRow1{};
@@ -145,6 +154,7 @@ float ModeToFloat(StereoPostProcessMode mode) noexcept
     switch (mode) {
     case StereoPostProcessMode::Darken: return 1.0f;
     case StereoPostProcessMode::Blur: return 2.0f;
+    case StereoPostProcessMode::BlurWave: return 3.0f;
     case StereoPostProcessMode::None:
     default:
         return 0.0f;
@@ -198,9 +208,9 @@ RectificationConstants MakeConstants(
     return result;
 }
 
-const char* RectificationHlsl() noexcept
+const std::string& RectificationHlsl()
 {
-    return R"hlsl(
+    static const std::string shader = std::string(R"hlsl(
 Texture2D<float4> xrInput : register(t0);
 RWTexture2D<float4> xrOutput : register(u0);
 
@@ -210,6 +220,10 @@ cbuffer RectificationConstants : register(b0)
     float4 inverseRow1;
     float4 inverseRow2;
     float4 borderRgba;
+    float4 roiPixels;
+    float4 rings;
+    float4 blend;
+    float4 waveWeights[10];
 };
 
 cbuffer XRTextureProcessingFrameConstants : register(b1)
@@ -264,14 +278,8 @@ float4 SampleRemappedOutputPixel(float2 destinationPixel)
     return SampleLinear(sourcePixel);
 }
 
-[numthreads(8, 8, 1)]
-void main(uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= dstWidth || id.y >= dstHeight) return;
-    const float2 destinationPixel = float2((float)id.x, (float)id.y);
-    xrOutput[id.xy] = SampleRemappedOutputPixel(destinationPixel);
-}
-)hlsl";
+)hlsl") + kBlurWaveComputeHlsl;
+    return shader;
 }
 
 const char* PlanePostProcessPixelShaderHlsl() noexcept
@@ -318,7 +326,7 @@ float4 main(float2 uv : TEXCOORD0) : SV_TARGET
     float4 color = xrTexture.Sample(xrSampler, uv);
     const float encodedMode = params1.w;
     const int mode = (int)floor(encodedMode + 1.0e-4f);
-    if (mode <= 0) {
+    if (mode <= 0 || mode == 3) { // BlurWave is composited in rectified pixel coordinates.
         return color * tint;
     }
 
@@ -354,7 +362,12 @@ VarjoXR::TextureProcessingDesc MakeProcessing(
     result.sourceName = "DualIC4Varjo_StereoRectificationPass.hlsl";
     result.outputSize = {outputSize.width, outputSize.height};
     result.userConstants.registerIndex = 0;
-    result.userConstants.set(MakeConstants(inverse, borderRgba));
+    struct alignas(16) ProcessingConstants {
+        RectificationConstants rectification;
+        BlurWaveConstants wave;
+    };
+    static_assert(offsetof(ProcessingConstants, wave) == 64 && sizeof(ProcessingConstants) == 272);
+    result.userConstants.set(ProcessingConstants{MakeConstants(inverse, borderRgba), {}});
     result.frameConstants.enabled = true;
     result.frameConstants.registerIndex = 1;
     return result;
@@ -384,6 +397,63 @@ void ApplyMaterialPostProcessParams(
         settings.blurRadiusPixels,
         encodedModeAndBlurStrength,
     };
+}
+
+bool UsesBlurWave(const VarjoXR::XRMaterial& material) noexcept
+{
+    return static_cast<int>(material.params1.w) == static_cast<int>(StereoPostProcessMode::BlurWave);
+}
+
+BlurWaveConstants MakeBlurWaveConstants(
+    const VarjoXR::XRMaterial& material, const std::optional<glm::vec2>& gazeUv,
+    double elapsedSeconds, double& phase)
+{
+    BlurWaveConstants wave{};
+    const glm::vec2 size(material.processing.outputSize);
+    const glm::vec2 last = size - 1.f;
+    const glm::vec2 center = glm::vec2(material.params0) * last;
+    const glm::vec2 radii = glm::max(glm::vec2(1.f),
+        glm::vec2(material.params0.z, material.params0.w) * std::min(size.x, size.y));
+    wave.roiPixels = {center.x, center.y, radii.x, radii.y};
+    wave.blend[0] = std::clamp((material.params1.w - ModeToFloat(StereoPostProcessMode::BlurWave)) *
+                               10.f, 0.f, 1.f);
+
+    const glm::vec2 delta = gazeUv ? *gazeUv * last - center : glm::vec2(0.f);
+    const double ellipseDistance = std::hypot(delta.x / radii.x, delta.y / radii.y);
+    if (!(ellipseDistance > 1.0) || wave.blend[0] <= 0.f) {
+        phase = 0.0;
+        return wave;
+    }
+
+    // The reference Viewer uses a 1 m wide virtual image viewed from 1 m.
+    const glm::vec2 farthest = glm::max(center, last - center);
+    const double thetaMax = std::atan2(std::hypot(farthest.x, farthest.y), size.x);
+    if (thetaMax <= 0.0) return wave;
+    const double distance = std::hypot(delta.x, delta.y);
+    const double thetaRoi = std::atan2(distance / ellipseDistance, size.x);
+    const double u = thetaMax > thetaRoi
+        ? std::clamp((std::atan2(distance, size.x) - thetaRoi) / (thetaMax - thetaRoi), 0.0, 1.0)
+        : 0.0;
+    constexpr double radiansPerDegree = 0.017453292519943295;
+    const double spacing = thetaMax / 3.0;
+    const double speed = (5.0 + 25.0 * u) * radiansPerDegree;
+    phase = std::fmod(phase + speed * std::max(0.0, elapsedSeconds), spacing);
+    for (int i = 0; i < 3; ++i) {
+        wave.rings[i] = static_cast<float>(size.x * std::tan((i + 1) * spacing - phase));
+    }
+
+    const double sigma = 5.0 + 8.0 * u;
+    const int radius = static_cast<int>(std::ceil(3.0 * sigma));
+    wave.rings[3] = static_cast<float>(radius);
+    double sum = 1.0;
+    wave.weights[0] = 1.f;
+    for (int i = 1; i <= radius; ++i) {
+        const double weight = std::exp(-0.5 * i * i / (sigma * sigma));
+        sum += 2.0 * weight;
+        wave.weights[i] = static_cast<float>(weight);
+    }
+    for (int i = 0; i <= radius; ++i) wave.weights[i] /= static_cast<float>(sum);
+    return wave;
 }
 
 } // namespace
@@ -531,10 +601,59 @@ void UpdatePlanePostProcessReveal(
         case StereoPostProcessMode::Blur:
             animated.blurStrength01 = 1.0f - reveal;
             break;
+        case StereoPostProcessMode::BlurWave:
+            animated.blurStrength01 *= 1.0f - reveal;
+            break;
         case StereoPostProcessMode::None:
             break;
         }
         ApplyMaterialPostProcessParams(plane, eye, animated);
+    }
+}
+
+bool PlaneUsesBlurWave(const VarjoXR::XRPlane& plane) noexcept
+{
+    return UsesBlurWave(plane.material(VarjoXR::Eye::Left)) ||
+           UsesBlurWave(plane.material(VarjoXR::Eye::Right));
+}
+
+void UpdateBlurWaveFrame(
+    VarjoXR::XRPlane& plane,
+    BlurWaveAnimation& animation,
+    const std::optional<glm::vec2>& gazeUv,
+    double elapsedSeconds)
+{
+    for (auto eye : {VarjoXR::Eye::Left, VarjoXR::Eye::Right}) {
+        auto& material = plane.material(eye);
+        auto& processing = material.processing;
+        const bool selected = UsesBlurWave(material);
+        const auto index = VarjoXR::EyeIndex(eye);
+        if (!selected && !animation.active[index]) continue;
+        if (selected && !processing.enabled && material.texture) {
+            // Without --calib the displayed camera image already uses Plane UVs.
+            processing = MakeProcessing(CalibrationHomography{}, {0.f, 0.f, 0.f, 1.f},
+                                        {material.texture->width(), material.texture->height()});
+        }
+        auto& data = processing.userConstants.data;
+        auto& phase = animation.phaseRadians[index];
+        if (!processing.enabled ||
+            data.size() != sizeof(RectificationConstants) + sizeof(BlurWaveConstants)) {
+            phase = 0.0;
+            animation.active[index] = false;
+            continue;
+        }
+        auto* destination = data.data() + sizeof(RectificationConstants);
+        if (!selected) {
+            const BlurWaveConstants disabled{};
+            std::memcpy(destination, &disabled, sizeof(disabled));
+            animation.active[index] = false;
+            phase = 0.0;
+            continue;
+        }
+
+        const auto wave = MakeBlurWaveConstants(material, gazeUv, elapsedSeconds, phase);
+        std::memcpy(destination, &wave, sizeof(wave));
+        animation.active[index] = true;
     }
 }
 

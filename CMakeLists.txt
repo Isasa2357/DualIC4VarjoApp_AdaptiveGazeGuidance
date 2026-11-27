@@ -293,6 +293,8 @@ add_executable(DualIC4VarjoApp
     src/AppConfig.cpp
     src/AppConfig.hpp
     src/ApplicationMainRealtimeCalibrationCoordinated.cpp
+    src/BlurWaveGaze.hpp
+    src/BlurWaveShader.hpp
     src/CalibrationRuntimeBridge.hpp
     src/CheckerboardStereoCalibration.cpp
     src/CheckerboardStereoCalibration.hpp

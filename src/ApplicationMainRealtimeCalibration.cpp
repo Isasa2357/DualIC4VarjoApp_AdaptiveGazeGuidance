@@ -2,6 +2,7 @@
 #include "ExperimentOutput.hpp"
 #include "EyeTrackerLoadServiceHook.hpp"
 #include "GazeOnCameraFrameService.hpp"
+#include "BlurWaveGaze.hpp"
 #include "ImuLoadServiceHook.hpp"
 #include "KeyInputService.hpp"
 #include "TimestampLoadService.hpp"
@@ -425,7 +426,10 @@ int main(int argc, char** argv)
         std::uint64_t renderRowIndex = 0;
         const auto renderStart = std::chrono::steady_clock::now();
 
+        BlurWaveGaze blurWaveGaze;
         std::thread renderThread([&]() noexcept {
+            BlurWaveAnimation blurWaveAnimation;
+            auto previousRenderTime = renderStart;
             SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             std::cout << "[THREAD] Varjo render thread id="
                       << GetCurrentThreadId() << '\n';
@@ -488,6 +492,14 @@ int main(int argc, char** argv)
                         space.frameContext().frameNumber =
                             static_cast<std::int64_t>(renderRowIndex + 1u);
 
+                        std::optional<glm::vec2> gazeUv;
+                        if (PlaneUsesBlurWave(plane)) {
+                            gazeUv = blurWaveGaze.planeUv(plane, d3dBackend.frameInfoSnapshot());
+                            space.frameContext().gazeUv = gazeUv.value_or(glm::vec2(-1.f));
+                        }
+                        UpdateBlurWaveFrame(plane, blurWaveAnimation, gazeUv,
+                            std::chrono::duration<double>(frameSnapshotTime - previousRenderTime).count());
+                        previousRenderTime = frameSnapshotTime;
                         space.render();
                         frameBegun = false;
                         space.endFrame();
@@ -753,6 +765,7 @@ int main(int argc, char** argv)
             while (!gazeBridgeStop.load(std::memory_order_acquire)) {
                 auto data = EyeTrackerLoadServiceHook::requestData();
                 if (!data.empty()) {
+                    blurWaveGaze.publish(data.back().gaze);
                     GazeOnCameraFrameHook::submitGazeData(std::move(data));
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));

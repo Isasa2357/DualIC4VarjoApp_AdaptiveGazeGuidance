@@ -56,6 +56,7 @@ inline const char* PostProcessModeName(StereoPostProcessMode mode) noexcept
     switch (mode) {
     case StereoPostProcessMode::Darken: return "darken";
     case StereoPostProcessMode::Blur: return "blur";
+    case StereoPostProcessMode::BlurWave: return "blur-wave";
     case StereoPostProcessMode::None:
     default:
         return "none";
@@ -120,6 +121,14 @@ inline bool ApplyCommandLinePostProcessMode(
         config.settings = MakeDarkenPostProcessSettings();
         return true;
     }
+    if (value == L"blur-wave") {
+        config.settings = MakeBlurPostProcessSettings();
+        config.settings.mode = StereoPostProcessMode::BlurWave;
+        config.settings.radiusShortAxis01 = 0.10f;
+        config.settings.radiusXShortAxis01 = 0.10f;
+        config.settings.radiusYShortAxis01 = 0.10f;
+        return true;
+    }
     if (value == L"blur" || value == L"blue") {
         config.settings = MakeBlurPostProcessSettings();
         return true;
@@ -157,7 +166,7 @@ inline PlanePostProcessRuntimeConfig MakeInitialPostProcessRuntimeConfig()
 
     if (!optionFound) {
         std::cout
-            << "[POSTPROCESS] mode=none (use --postprocess darken or --postprocess blur/blue to enable)\n";
+            << "[POSTPROCESS] mode=none (use --postprocess darken, blur or blur-wave to enable)\n";
     } else if (!optionValid) {
         config.settings = StereoPostProcessSettings{};
         config.settings.mode = StereoPostProcessMode::None;

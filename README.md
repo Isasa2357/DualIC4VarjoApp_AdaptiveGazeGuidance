@@ -170,3 +170,21 @@ out\build\default\Release\DualIC4VarjoApp.exe ^
 | Shift + ↑ / ↓ | 前後へ0.01 m |
 | Shift + ← / → | Plane幅を0.01 m変更 |
 | Esc / Ctrl+C | 終了 |
+
+
+## 視線連動のブラー波
+
+通常の起動引数に `--postprocess blur-wave` を追加し、ImGui の
+`Apply command-line postprocess` をオンにすると、HMD 上のカメラ映像に
+Viewer の ID 5 を適用します。既定は両眼です。描画側の `eyeModes` では
+`StereoPostProcessMode::BlurWave` を片眼だけにも指定できます。
+
+ROI 内は元の校正後映像を表示し、ROI 外には σ=3 px のガウシアンブラーをかけます。
+視線が ROI の外にある間、最大 3 本の強いブラー帯が ROI に向かって移動します。
+視線が ROI 境界から離れるほど、帯の σ は 5～13 px、速度は 5～30°/s の範囲で増加します。
+帯の中心幅は片眼の画像幅の 5%、両端の滑らかな遷移を含む全幅は 10% です。
+角度の換算は Viewer と同じく仮想画像幅 1 m・視距離 1 m を用います。
+
+初期 ROI は画像短辺の 10% を半径とする円で、既存の ROI スライダーで楕円にも設定できます。
+視線が ROI 内に戻った場合、有効な視線がない場合、またはサンプルが表示予定時刻から
+100 ms を超えて古い場合は、帯が消えて ROI 外のベースブラーだけになります。
