@@ -1,7 +1,5 @@
 #include "StereoCalibrationSupport.hpp"
 
-#include <VarjoXR/VarjoXR.hpp>
-
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -367,6 +365,7 @@ void ApplyMaterialPostProcessParams(
     VarjoXR::Eye eye,
     StereoPostProcessSettings settings) noexcept
 {
+    settings.mode = settings.modeForEye(eye);
     settings = SanitizePostProcessSettings(settings);
     const float mode = settings.enabled ? ModeToFloat(settings.mode) : 0.0f;
     const float encodedModeAndBlurStrength =
@@ -385,15 +384,6 @@ void ApplyMaterialPostProcessParams(
         settings.blurRadiusPixels,
         encodedModeAndBlurStrength,
     };
-}
-
-void UpdatePostProcessStateForEye(
-    VarjoXR::XRPlane& plane,
-    VarjoXR::Eye eye,
-    const StereoPostProcessSettings& settings,
-    float /*dynamicAmount01*/) noexcept
-{
-    ApplyMaterialPostProcessParams(plane, eye, settings);
 }
 
 } // namespace
@@ -515,10 +505,37 @@ void ApplyCalibrationToPlane(
 void UpdatePlanePostProcessState(
     VarjoXR::XRPlane& plane,
     const StereoPostProcessSettings& settings,
-    float dynamicAmount01)
+    float /*dynamicAmount01*/)
 {
-    UpdatePostProcessStateForEye(plane, VarjoXR::Eye::Left, settings, dynamicAmount01);
-    UpdatePostProcessStateForEye(plane, VarjoXR::Eye::Right, settings, dynamicAmount01);
+    ApplyMaterialPostProcessParams(plane, VarjoXR::Eye::Left, settings);
+    ApplyMaterialPostProcessParams(plane, VarjoXR::Eye::Right, settings);
+}
+
+void UpdatePlanePostProcessReveal(
+    VarjoXR::XRPlane& plane,
+    const StereoPostProcessSettings& settings,
+    float revealAmount01,
+    float expandedRadiusShortAxis01)
+{
+    const float reveal = std::clamp(FiniteOr(revealAmount01, 0.0f), 0.0f, 1.0f);
+    for (auto eye : {VarjoXR::Eye::Left, VarjoXR::Eye::Right}) {
+        auto animated = settings;
+        switch (settings.modeForEye(eye)) {
+        case StereoPostProcessMode::Darken: {
+            const float base = std::clamp(FiniteOr(settings.radiusShortAxis01, 0.25f), 0.0f, 4.0f);
+            const float expanded = FiniteOr(expandedRadiusShortAxis01, 4.0f);
+            const float target = std::clamp(expanded > 0.0f ? expanded : 4.0f, base, 4.0f);
+            animated.radiusShortAxis01 = base + (target - base) * reveal;
+            break;
+        }
+        case StereoPostProcessMode::Blur:
+            animated.blurStrength01 = 1.0f - reveal;
+            break;
+        case StereoPostProcessMode::None:
+            break;
+        }
+        ApplyMaterialPostProcessParams(plane, eye, animated);
+    }
 }
 
 void UpdatePlaneAspectFromCalibration(

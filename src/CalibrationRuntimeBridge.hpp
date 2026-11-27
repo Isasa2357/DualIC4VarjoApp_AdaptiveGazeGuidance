@@ -398,45 +398,6 @@ inline void ApplyPlaneVisibilityFromKeyboard(VarjoXR::XRPlane& plane)
         << " (rendering continues, O toggles)\n";
 }
 
-inline StereoPostProcessSettings MakeRadiusRevealSettings(
-    const PlanePostProcessRuntimeConfig& config,
-    float revealAmount01) noexcept
-{
-    StereoPostProcessSettings settings = config.settings;
-    const float reveal = std::clamp(
-        std::isfinite(revealAmount01) ? revealAmount01 : 0.0f,
-        0.0f,
-        1.0f);
-    const float baseRadius = std::clamp(
-        std::isfinite(settings.radiusShortAxis01)
-            ? settings.radiusShortAxis01
-            : 0.25f,
-        0.0f,
-        4.0f);
-    const float expandedRadius = std::max(
-        baseRadius,
-        std::clamp(
-            PositiveOr(config.revealExpandedRadiusShortAxis01, 4.0f),
-            0.0f,
-            4.0f));
-    settings.radiusShortAxis01 =
-        baseRadius + (expandedRadius - baseRadius) * reveal;
-    return settings;
-}
-
-inline StereoPostProcessSettings MakeBlurRevealSettings(
-    const PlanePostProcessRuntimeConfig& config,
-    float revealAmount01) noexcept
-{
-    StereoPostProcessSettings settings = config.settings;
-    const float reveal = std::clamp(
-        std::isfinite(revealAmount01) ? revealAmount01 : 0.0f,
-        0.0f,
-        1.0f);
-    settings.blurStrength01 = 1.0f - reveal;
-    return settings;
-}
-
 inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
 {
     using Clock = std::chrono::steady_clock;
@@ -447,8 +408,7 @@ inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
     static thread_local Clock::time_point pulseStart{};
 
     const auto config = GetPostProcessRuntimeConfig();
-    if (!config.settings.enabled ||
-        config.settings.mode == StereoPostProcessMode::None) {
+    if (!config.settings.enabled || !config.settings.hasFilter()) {
         pulseActive = false;
         UpdatePlanePostProcessState(plane, config.settings, 0.0f);
         return;
@@ -502,17 +462,8 @@ inline void ApplyPlanePostProcessFromKeyboard(VarjoXR::XRPlane& plane)
         revealAmount = std::clamp(revealAmount, 0.0f, 1.0f);
     }
 
-    if (config.settings.mode == StereoPostProcessMode::Darken) {
-        const StereoPostProcessSettings animatedSettings =
-            MakeRadiusRevealSettings(config, revealAmount);
-        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
-    } else if (config.settings.mode == StereoPostProcessMode::Blur) {
-        const StereoPostProcessSettings animatedSettings =
-            MakeBlurRevealSettings(config, revealAmount);
-        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
-    } else {
-        UpdatePlanePostProcessState(plane, config.settings, 0.0f);
-    }
+    UpdatePlanePostProcessReveal(
+        plane, config.settings, revealAmount, config.revealExpandedRadiusShortAxis01);
 }
 
 inline void ApplyPlaneInputAfterRender(VarjoXR::XRPlane& plane)
@@ -664,8 +615,7 @@ inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
         << "[CALIB] controls: Q=finish, R=clear observations, Esc=abort\n"
         << "[CALIB] move plane: arrows; resize/distance: Shift+arrows\n"
         << "[CALIB] hide/show Varjo plane: O\n";
-    if (config.settings.enabled &&
-        config.settings.mode != StereoPostProcessMode::None) {
+    if (config.settings.enabled && config.settings.hasFilter()) {
         std::cout
             << "[CALIB] reveal "
             << PostProcessModeName(config.settings.mode)

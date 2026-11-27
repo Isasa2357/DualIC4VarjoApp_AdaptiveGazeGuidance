@@ -13,7 +13,7 @@ inline void ApplyOnce()
     applied = true;
 
     auto config = CalibrationRuntimeBridge::GetPostProcessRuntimeConfig();
-    if (config.settings.mode == StereoPostProcessMode::None) {
+    if (!config.settings.hasFilter()) {
         return;
     }
 

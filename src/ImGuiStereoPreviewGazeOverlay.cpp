@@ -613,9 +613,9 @@ void DrawPostProcessPanel()
     ImGui::Separator();
     ImGui::Spacing();
 
-    bool apply = settings.enabled && settings.mode != StereoPostProcessMode::None;
+    bool apply = settings.enabled && settings.hasFilter();
     if (ImGui::Checkbox("Apply command-line postprocess", &apply)) {
-        settings.enabled = apply && settings.mode != StereoPostProcessMode::None;
+        settings.enabled = apply && settings.hasFilter();
         changed = true;
     }
 

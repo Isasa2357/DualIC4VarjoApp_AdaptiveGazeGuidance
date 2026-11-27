@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 
 namespace DualIC4Varjo {
@@ -60,6 +61,20 @@ struct StereoPostProcessSettings {
     float blurRadiusPixels = 6.0f;
     float blurSigmaPixels = 3.0f;
     float blurStrength01 = 1.0f;
+
+    // When unset, both eyes follow the shared mode selected by the caller.
+    std::optional<VarjoXR::EyeArray<StereoPostProcessMode>> eyeModes;
+
+    StereoPostProcessMode modeForEye(VarjoXR::Eye eye) const noexcept
+    {
+        return eyeModes ? (*eyeModes)[VarjoXR::EyeIndex(eye)] : mode;
+    }
+
+    bool hasFilter() const noexcept
+    {
+        return modeForEye(VarjoXR::Eye::Left) != StereoPostProcessMode::None ||
+               modeForEye(VarjoXR::Eye::Right) != StereoPostProcessMode::None;
+    }
 };
 
 struct StereoCalibrationDocument {
@@ -105,6 +120,12 @@ void UpdatePlanePostProcessState(
     VarjoXR::XRPlane& plane,
     const StereoPostProcessSettings& settings,
     float dynamicAmount01);
+
+void UpdatePlanePostProcessReveal(
+    VarjoXR::XRPlane& plane,
+    const StereoPostProcessSettings& settings,
+    float revealAmount01,
+    float expandedRadiusShortAxis01);
 
 void UpdatePlaneAspectFromCalibration(
     VarjoXR::XRPlane& plane,

@@ -115,31 +115,6 @@ inline void PrintPlaneState(
               << '\n';
 }
 
-inline void ApplyAnimatedPostProcessSettings(
-    VarjoXR::XRPlane& plane,
-    const CalibrationRuntimeBridge::PlanePostProcessRuntimeConfig& config,
-    float revealAmount01)
-{
-    const float revealAmount = std::clamp(
-        std::isfinite(revealAmount01) ? revealAmount01 : 0.0f,
-        0.0f,
-        1.0f);
-
-    if (config.settings.mode == StereoPostProcessMode::Darken) {
-        const StereoPostProcessSettings animatedSettings =
-            CalibrationRuntimeBridge::MakeRadiusRevealSettings(
-                config,
-                revealAmount);
-        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
-    } else if (config.settings.mode == StereoPostProcessMode::Blur) {
-        const StereoPostProcessSettings animatedSettings =
-            CalibrationRuntimeBridge::MakeBlurRevealSettings(
-                config,
-                revealAmount);
-        UpdatePlanePostProcessState(plane, animatedSettings, 0.0f);
-    }
-}
-
 inline void ApplyPostProcessWithGuiTransition(VarjoXR::XRPlane& plane)
 {
     using Clock = std::chrono::steady_clock;
@@ -160,8 +135,7 @@ inline void ApplyPostProcessWithGuiTransition(VarjoXR::XRPlane& plane)
 
     const auto config = CalibrationRuntimeBridge::GetPostProcessRuntimeConfig();
     const bool desiredApply =
-        config.settings.enabled &&
-        config.settings.mode != StereoPostProcessMode::None;
+        config.settings.enabled && config.settings.hasFilter();
     const auto now = Clock::now();
 
     if (desiredApply) {
@@ -179,7 +153,7 @@ inline void ApplyPostProcessWithGuiTransition(VarjoXR::XRPlane& plane)
                 ? lastActiveConfig.settings.mode
                 : config.settings.mode);
         transitionConfig = desiredApply ? config : lastActiveConfig;
-        if (transitionConfig.settings.mode != StereoPostProcessMode::None) {
+        if (transitionConfig.settings.hasFilter()) {
             transitionConfig.settings.enabled = true;
         }
 
@@ -192,7 +166,7 @@ inline void ApplyPostProcessWithGuiTransition(VarjoXR::XRPlane& plane)
     previousDesiredApply = desiredApply;
 
     if (!transitionActive ||
-        transitionConfig.settings.mode == StereoPostProcessMode::None) {
+        !transitionConfig.settings.hasFilter()) {
         return;
     }
 
@@ -221,7 +195,8 @@ inline void ApplyPostProcessWithGuiTransition(VarjoXR::XRPlane& plane)
     // revealAmount == 1 means postprocess is effectively removed; revealAmount
     // == 0 means the selected command-line postprocess is fully applied.
     const float revealAmount = transitionToApply ? (1.0f - t) : t;
-    ApplyAnimatedPostProcessSettings(plane, transitionConfig, revealAmount);
+    UpdatePlanePostProcessReveal(plane, transitionConfig.settings, revealAmount,
+                                 transitionConfig.revealExpandedRadiusShortAxis01);
 }
 
 } // namespace detail
