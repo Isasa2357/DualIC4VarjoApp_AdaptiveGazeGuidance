@@ -7,15 +7,16 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 
-# This script is intended to be launched from the repository root.
-# The executable and default config paths are kept here so the UI only needs
-# dir, project, name, and the experimental postprocess condition.
 REPO_ROOT = Path(__file__).resolve().parent
-APP_EXE = REPO_ROOT / "out" / "build" / "default" / "Release" / "DualIC4VarjoApp.exe"
+BUILD_ROOT = REPO_ROOT / "out" / "build"
+EXE_CANDIDATES = tuple(
+    BUILD_ROOT / build / "Release" / "DualIC4VarjoApp.exe"
+    for build in ("blur-wave", "default")
+)
 
-LEFT_JSON = Path(r"gamma1.json")
-RIGHT_JSON = Path(r"gamma1.json")
-CALIB_JSON = Path(r"stereo_calibration.json")
+LEFT_JSON = REPO_ROOT / "gamma1.json"
+RIGHT_JSON = REPO_ROOT / "gamma1.json"
+CALIB_JSON = REPO_ROOT / "stereo_calibration.json"
 
 CONDITION_TO_POSTPROCESS = {
     "none": "none",
@@ -23,6 +24,7 @@ CONDITION_TO_POSTPROCESS = {
     # The application-side mode name is "darken". The experiment condition name
     # shown to the user is "highlight".
     "highlight": "darken",
+    "blur-wave": "blur-wave",
 }
 
 BUTTONS = [
@@ -37,14 +39,21 @@ BUTTONS = [
 ]
 
 
-def build_command(output_dir: str, project: str, name: str, postprocess: str) -> list[str]:
+def build_command(
+    exe: Path, output_dir: str, project: str, name: str, postprocess: str,
+    left_serial: str, right_serial: str,
+) -> list[str]:
+    if not left_serial or not right_serial:
+        raise ValueError("Enter the serial IDs of both cameras.")
+    if left_serial == right_serial:
+        raise ValueError("Left and right serial IDs must identify different cameras.")
     return [
-        str(APP_EXE),
+        str(exe),
         "--dir", output_dir,
         "--project", project,
         "--name", name,
-        "--left-device-index", "1",
-        "--right-device-index", "0",
+        "--left-serial", left_serial,
+        "--right-serial", right_serial,
         "--left-json", str(LEFT_JSON),
         "--right-json", str(RIGHT_JSON),
         "--left-json-device-index", "0",
@@ -85,6 +94,8 @@ class LauncherApp(tk.Tk):
         self.dir_var = tk.StringVar(value="logs")
         self.project_var = tk.StringVar(value="checkerboard_calibration_test")
         self.name_var = tk.StringVar(value="DEFAULT")
+        self.left_serial_var = tk.StringVar()
+        self.right_serial_var = tk.StringVar()
         self.condition_var = tk.StringVar(value="none")
         self.last_process: subprocess.Popen[bytes] | None = None
 
@@ -98,23 +109,25 @@ class LauncherApp(tk.Tk):
             ("dir", self.dir_var),
             ("project", self.project_var),
             ("name", self.name_var),
+            ("Left camera serial", self.left_serial_var),
+            ("Right camera serial", self.right_serial_var),
         ]
         for row, (label, variable) in enumerate(entries):
             ttk.Label(root, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
             ttk.Entry(root, textvariable=variable, width=54).grid(row=row, column=1, columnspan=3, sticky="ew", pady=4)
 
-        ttk.Label(root, text="condition").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(root, text="condition").grid(row=len(entries), column=0, sticky="w", padx=(0, 8), pady=4)
         condition = ttk.Combobox(
             root,
             textvariable=self.condition_var,
-            values=("none", "blur", "highlight"),
+            values=tuple(CONDITION_TO_POSTPROCESS),
             state="readonly",
             width=20,
         )
-        condition.grid(row=3, column=1, sticky="w", pady=4)
+        condition.grid(row=len(entries), column=1, sticky="w", pady=4)
 
         button_frame = ttk.LabelFrame(root, text="Launch", padding=8)
-        button_frame.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(12, 4))
+        button_frame.grid(row=len(entries) + 1, column=0, columnspan=4, sticky="ew", pady=(12, 4))
         for index, (label, suffix, source) in enumerate(BUTTONS):
             button = ttk.Button(
                 button_frame,
@@ -125,7 +138,7 @@ class LauncherApp(tk.Tk):
             button.grid(row=index // 4, column=index % 4, padx=4, pady=4)
 
         status_frame = ttk.LabelFrame(root, text="Status", padding=8)
-        status_frame.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        status_frame.grid(row=len(entries) + 2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         self.status = tk.Text(status_frame, width=88, height=8, wrap="word")
         self.status.grid(row=0, column=0, sticky="ew")
         self.status.insert("end", f"Repository root: {REPO_ROOT}\n")
@@ -159,18 +172,22 @@ class LauncherApp(tk.Tk):
         return output_dir, project, name, selected_condition, postprocess
 
     def launch(self, label: str, suffix: str, source: str) -> None:
+        exe = next((path for path in EXE_CANDIDATES if path.is_file()), None)
+        if exe is None:
+            paths = "\n".join(str(path) for path in EXE_CANDIDATES)
+            messagebox.showerror("Executable not found", f"Build Release first. Checked:\n{paths}")
+            return
+
         try:
             output_dir, project, name, selected_condition, postprocess = self.resolve_values(suffix, source)
+            command = build_command(
+                exe, output_dir, project, name, postprocess,
+                self.left_serial_var.get().strip(), self.right_serial_var.get().strip(),
+            )
         except ValueError as error:
             messagebox.showerror("Input error", str(error))
             return
 
-        if not APP_EXE.is_file():
-            messagebox.showerror(
-                "Executable not found",
-                f"DualIC4VarjoApp.exe was not found:\n{APP_EXE}\n\nBuild Release first.",
-            )
-            return
         if not LEFT_JSON.is_file():
             messagebox.showerror("Config not found", f"Left JSON was not found:\n{LEFT_JSON}")
             return
@@ -181,7 +198,6 @@ class LauncherApp(tk.Tk):
             messagebox.showerror("Calibration not found", f"Calibration JSON was not found:\n{CALIB_JSON}")
             return
 
-        command = build_command(output_dir, project, name, postprocess)
         creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         try:
             self.last_process = subprocess.Popen(
