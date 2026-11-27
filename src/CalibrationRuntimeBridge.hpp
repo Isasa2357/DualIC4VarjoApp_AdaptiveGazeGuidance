@@ -127,7 +127,7 @@ inline bool ApplyCommandLinePostProcessMode(
     if (value == L"blur-left" || value == L"blur-right") {
         config.settings = StereoPostProcessSettings{};
         config.settings.mode = StereoPostProcessMode::OutsideBlur;
-        config.settings.enabled = true;
+        config.settings.enabled = false;
         config.settings.edgeSoftnessShortAxis01 = 0.015f;
         VarjoXR::EyeArray<StereoPostProcessMode> modes{};
         const auto eye = value == L"blur-left" ? VarjoXR::Eye::Left : VarjoXR::Eye::Right;
@@ -188,7 +188,7 @@ inline PlanePostProcessRuntimeConfig MakeInitialPostProcessRuntimeConfig()
         std::cout
             << "[POSTPROCESS] invalid --postprocess value; postprocess disabled\n";
     } else if (config.settings.mode == StereoPostProcessMode::OutsideBlur) {
-        std::cout << "[POSTPROCESS] mode=" << PostProcessModeName(config.settings) << " (fixed at startup)\n";
+        std::cout << "[POSTPROCESS] mode=" << PostProcessModeName(config.settings) << " (eye fixed at startup, Apply initially off)\n";
     } else {
         std::cout
             << "[POSTPROCESS] mode="
@@ -641,7 +641,8 @@ inline CheckerboardCalibrationResult RunHeadlessCheckerboardStereoCalibration(
         << "[CALIB] move plane: arrows; resize/distance: Shift+arrows\n"
         << "[CALIB] hide/show Varjo plane: O\n";
     if (config.settings.mode == StereoPostProcessMode::OutsideBlur) {
-        std::cout << "[CALIB] active postprocess: " << PostProcessModeName(config.settings) << "\n";
+        std::cout << "[CALIB] " << PostProcessModeName(config.settings)
+                  << ", Apply=" << (config.settings.enabled ? "on" : "off") << '\n';
     } else if (config.settings.enabled && config.settings.hasFilter()) {
         std::cout
             << "[CALIB] reveal "

@@ -613,12 +613,10 @@ void DrawPostProcessPanel()
     ImGui::Separator();
     ImGui::Spacing();
 
-    if (settings.mode != StereoPostProcessMode::OutsideBlur) {
-        bool apply = settings.enabled && settings.hasFilter();
-        if (ImGui::Checkbox("Apply command-line postprocess", &apply)) {
-            settings.enabled = apply && settings.hasFilter();
-            changed = true;
-        }
+    bool apply = settings.enabled && settings.hasFilter();
+    if (ImGui::Checkbox("Apply command-line postprocess", &apply)) {
+        settings.enabled = apply && settings.hasFilter();
+        changed = true;
     }
 
     bool debugDot = GuiControlBridge::PostProcessDebugCenterDotVisible();
